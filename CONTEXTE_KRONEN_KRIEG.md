@@ -140,5 +140,5 @@ Fonctions dans `js/app.js`, appelées via `ensureSemaineAuto()` à chaque `initS
 3. Solde = cumul depuis le début, pas par semaine
 4. Après git push : 60s + Ctrl+F5
 5. Quota → modifier dans quotas.html ET admin.html
-6. **Toute nouvelle page/script Firebase doit faire `await authReady;` avant lecture/écriture** (sinon PERMISSION_DENIED)
+6. **Toute nouvelle page/script Firebase doit faire `await authReady;` avant lecture/écriture** (sinon PERMISSION_DENIED) **ET inclure le script `firebase-auth-compat.js`** (sinon `firebase.auth is not a function`) — bug rencontré dans setup.html, corrigé
 7. Fichiers modifiés ici ne sont pas auto dans le repo — télécharger et remplacer manuellement (ou git add/commit/push)
