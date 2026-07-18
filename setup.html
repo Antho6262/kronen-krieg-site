@@ -55,12 +55,14 @@
 <script>
 (async function checkExisting() {
   try {
+    await authReady;
     const snap = await db.ref("membres").once("value");
     if (snap.val()) document.getElementById("warnBox").style.display = "block";
   } catch (e) {}
 })();
 
 async function initialiser() {
+  await authReady;
   const prenom = document.getElementById("inpPrenom").value.trim();
   const nom = document.getElementById("inpNom").value.trim();
   const grade = document.getElementById("inpGrade").value.trim() || "Fondateur";
