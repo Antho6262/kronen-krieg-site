@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stats — Kronen Krieg</title>
+<link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+<div id="shell"></div>
+
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+<script src="../js/firebase-config.js"></script>
+<script src="../js/app.js"></script>
+<script>
+let SESSION;
+let MEMBRES = [], ACTIONS_DISPO = {}, SEMAINES = [], ACTIONS_ALL = [], PRODUITS_DROGUE = [];
+
+function renderContent() {
+  document.getElementById("content").innerHTML = `
+    <h1>Stats</h1>
+    <div class="sigil-rule"></div>
+
+    <div class="panel mt16">
+      <div class="row" style="align-items:flex-end; flex-wrap:wrap; gap:12px;">
+        <div><label class="l">Type</label><select id="selType" onchange="onTypeChange()">
+          <option value="action">Par action</option>
+          <option value="drogue">Vente de drogue</option>
+        </select></div>
+        <div id="wrapAction"><label class="l">Action</label><select id="selAction" onchange="chargerStats()"></select></div>
+        <div id="wrapDrogue" style="display:none"><label class="l">Drogue</label><select id="selDrogue" onchange="chargerStats()"></select></div>
+        <div><label class="l">Portée</label><select id="selPortee" onchange="onPorteeChange()">
+          <option value="groupe">Tout le groupe</option>
+          <option value="membre">Par membre</option>
+        </select></div>
+        <div id="wrapMembre" style="display:none"><label class="l">Membre</label><select id="selMembre" onchange="chargerStats()"></select></div>
+        <div><label class="l">Semaine</label><select id="selSemaine" onchange="chargerStats()"></select></div>
+      </div>
+    </div>
+
+    <div class="grid cols-2 mt16">
+      <div class="card"><h3>Gains totaux</h3><div class="stat-num gold" id="totalGains">0 $</div></div>
+      <div class="card" id="cardQuantite"><h3 id="titreQuantite">Quantité</h3><div class="stat-num gold" id="quantiteVal">—</div></div>
+    </div>
+
+    <div class="panel mt24" id="panelClassement">
+      <div class="panel-head"><h2>Classement membres</h2></div>
+      <table><thead><tr id="theadClassement"><th>#</th><th>Membre</th><th>Actions</th><th>Réussites</th><th>Gains générés</th></tr></thead>
+        <tbody id="tblClassement"><tr class="empty-row"><td colspan="5">Chargement…</td></tr></tbody></table>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h2>Détail par semaine</h2></div>
+      <table><thead><tr><th>Semaine</th><th id="theadSemainesActions">Actions</th><th>Gains sale</th><th>Gains propre</th></tr></thead>
+        <tbody id="tblSemaines"><tr class="empty-row"><td colspan="4">Chargement…</td></tr></tbody></table>
+    </div>
+  `;
+}
+
+function onTypeChange() {
+  const t = document.getElementById("selType").value;
+  document.getElementById("wrapAction").style.display = t === "action" ? "" : "none";
+  document.getElementById("wrapDrogue").style.display = t === "drogue" ? "" : "none";
+  chargerStats();
+}
+
+function onPorteeChange() {
+  const p = document.getElementById("selPortee").value;
+  document.getElementById("wrapMembre").style.display = p === "membre" ? "" : "none";
+  chargerStats();
+}
+
+async function init() {
+  const [snapM, snapAD, snapSem, snapAct, snapStock, snapG] = await Promise.all([
+    db.ref("membres").once("value"),
+    db.ref("actions_dispo").once("value"),
+    db.ref("semaines").once("value"),
+    db.ref("actions").once("value"),
+    db.ref("stock").once("value"),
+    db.ref("visibilite_grades").once("value")
+  ]);
+  const visi = snapG.val() || {};
+  const gradesMasques = new Set(Object.keys(visi).filter(g => visi[g] && visi[g].stats === false));
+  MEMBRES = entries(snapM.val()).map(([id, m]) => ({ id, ...m })).filter(m => m.actif !== false && !gradesMasques.has(m.grade));
+  const membresMasquesIds = new Set(entries(snapM.val()).filter(([, m]) => gradesMasques.has(m.grade)).map(([id]) => id));
+  ACTIONS_DISPO = snapAD.val() || {};
+  SEMAINES = entries(snapSem.val()).map(([id, s]) => ({ id, ...s })).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  const actionsParSemaine = snapAct.val() || {};
+  ACTIONS_ALL = [];
+  SEMAINES.forEach(s => { ACTIONS_ALL = ACTIONS_ALL.concat(entries(actionsParSemaine[s.id]).map(([id, a]) => ({ ...a, semaineId: s.id }))); });
+  ACTIONS_ALL = ACTIONS_ALL.filter(a => !membresMasquesIds.has(a.membre_id));
+
+  const semaineActive = SEMAINES.find(s => s.bloquee !== true) || SEMAINES[0];
+  document.getElementById("selSemaine").innerHTML = SEMAINES.map(s =>
+    `<option value="${s.id}" ${semaineActive && s.id === semaineActive.id ? "selected" : ""}>${s.nom}${semaineActive && s.id === semaineActive.id ? " (active)" : ""}</option>`
+  ).join("") + `<option value="toutes">Toutes les semaines</option>`;
+
+  const stock = snapStock.val() || {};
+  const catDrogue = entries(stock).find(([, cat]) => (cat.nom || "").toLowerCase() === "drogue");
+  PRODUITS_DROGUE = catDrogue ? entries(catDrogue[1].produits).map(([, p]) => p.nom) : [];
+
+  const actionsClassiques = entries(ACTIONS_DISPO).filter(([, a]) => !a.cat_variable);
+  document.getElementById("selAction").innerHTML = `<option value="">Toutes les actions</option>` +
+    (actionsClassiques.length
+      ? actionsClassiques.map(([id, a]) => `<option value="${id}">${a.nom}</option>`).join("")
+      : "");
+
+  document.getElementById("selDrogue").innerHTML = `<option value="">Toutes les drogues</option>`
+    + PRODUITS_DROGUE.map(nom => `<option value="${nom}">${nom}</option>`).join("");
+
+  document.getElementById("selMembre").innerHTML = MEMBRES.map(m => `<option value="${m.id}">${m.prenom} ${m.nom || ""}</option>`).join("");
+
+  chargerStats();
+}
+
+function chargerStats() {
+  const type = document.getElementById("selType").value;
+  const portee = document.getElementById("selPortee").value;
+  const actionId = document.getElementById("selAction").value;
+  const drogueNom = document.getElementById("selDrogue").value;
+  const membreId = document.getElementById("selMembre").value;
+
+  const semaineFiltre = document.getElementById("selSemaine").value;
+
+  let base = semaineFiltre === "toutes" ? ACTIONS_ALL : ACTIONS_ALL.filter(a => a.semaineId === semaineFiltre);
+  if (type === "action") base = actionId ? base.filter(a => a.action_id === actionId) : base.filter(a => !a.produit_drogue_id);
+  else if (type === "drogue") base = drogueNom ? base.filter(a => a.produit_drogue === drogueNom) : base.filter(a => a.produit_drogue_id && a.action !== "Labo");
+
+  if (portee === "membre") base = base.filter(a => a.membre_id === membreId);
+
+  const isSpecific = type === "action" || type === "drogue";
+
+  const gains = base.reduce((acc, a) => acc + Number(a.gains_totaux || 0), 0);
+  document.getElementById("totalGains").textContent = formatMoney(gains);
+
+  if (type === "drogue") {
+    const qteVendue = base.filter(a => a.resultat === "Réussite").reduce((acc, a) => acc + Number(a.quantite || 0), 0);
+    document.getElementById("titreQuantite").textContent = "Quantité vendue";
+    document.getElementById("quantiteVal").textContent = `${drogueNom || "Toutes les drogues"} : ${qteVendue}`;
+  } else if (type === "action") {
+    const qteAction = base.filter(a => a.resultat === "Réussite").reduce((acc, a) => acc + Number(a.quantite || 0), 0);
+    const actionNom = actionId ? ((ACTIONS_DISPO[actionId] && ACTIONS_DISPO[actionId].nom) || "") : "Toutes les actions";
+    document.getElementById("titreQuantite").textContent = "Quantité réalisée";
+    document.getElementById("quantiteVal").textContent = `${actionNom} : ${qteAction}`;
+  }
+
+  {
+    const parMembre = {};
+    base.forEach(a => {
+      const key = a.prenom_membre || "?";
+      if (!parMembre[key]) parMembre[key] = { actions: 0, reussites: 0, gains: 0, qte: 0, parDrogue: {}, parAction: {} };
+      parMembre[key].actions++;
+      if (a.resultat === "Réussite") {
+        parMembre[key].reussites++;
+        parMembre[key].qte += Number(a.quantite || 0);
+        if (a.produit_drogue) parMembre[key].parDrogue[a.produit_drogue] = (parMembre[key].parDrogue[a.produit_drogue] || 0) + Number(a.quantite || 0);
+        if (a.action) parMembre[key].parAction[a.action] = (parMembre[key].parAction[a.action] || 0) + Number(a.quantite || 0);
+      }
+      parMembre[key].gains += Number(a.gains_totaux || 0);
+    });
+    const classement = Object.entries(parMembre).sort((a, b) => b[1].gains - a[1].gains);
+    const toutesDrogues = type === "drogue" && !drogueNom;
+    const toutesActions = type === "action" && !actionId;
+    const nomsActionsClassiques = entries(ACTIONS_DISPO).filter(([, a]) => !a.cat_variable).map(([, a]) => a.nom);
+    const actionNomClassement = actionId ? ((ACTIONS_DISPO[actionId] && ACTIONS_DISPO[actionId].nom) || "") : "Toutes les actions";
+
+    document.getElementById("theadClassement").innerHTML = type === "drogue"
+      ? (toutesDrogues
+          ? `<th>#</th><th>Membre</th>` + PRODUITS_DROGUE.map(nom => `<th>${nom}</th>`).join("") + `<th>Gains générés</th>`
+          : `<th>#</th><th>Membre</th><th>Quantité vendue</th><th>Gains générés</th>`)
+      : type === "action"
+        ? (toutesActions
+            ? `<th>#</th><th>Membre</th>` + nomsActionsClassiques.map(nom => `<th>${nom}</th>`).join("") + `<th>Gains générés</th>`
+            : `<th>#</th><th>Membre</th><th>Quantité réalisée</th><th>Gains générés</th>`)
+        : `<th>#</th><th>Membre</th><th>Actions</th><th>Réussites</th><th>Gains générés</th>`;
+
+    let lignesClassement = classement.length ? classement.map(([nom, d], i) => {
+      if (type === "drogue") {
+        if (toutesDrogues) {
+          const cellsDrogue = PRODUITS_DROGUE.map(dn => `<td>${d.parDrogue[dn] || 0}</td>`).join("");
+          return `<tr><td>${i + 1}</td><td>${nom}</td>${cellsDrogue}<td>${formatMoney(d.gains)}</td></tr>`;
+        }
+        return `<tr><td>${i + 1}</td><td>${nom}</td><td>${drogueNom} : ${d.qte}</td><td>${formatMoney(d.gains)}</td></tr>`;
+      }
+      if (type === "action") {
+        if (toutesActions) {
+          const cellsAction = nomsActionsClassiques.map(an => `<td>${d.parAction[an] || 0}</td>`).join("");
+          return `<tr><td>${i + 1}</td><td>${nom}</td>${cellsAction}<td>${formatMoney(d.gains)}</td></tr>`;
+        }
+        return `<tr><td>${i + 1}</td><td>${nom}</td><td>${actionNomClassement} : ${d.qte}</td><td>${formatMoney(d.gains)}</td></tr>`;
+      }
+      return `<tr><td>${i + 1}</td><td>${nom}</td><td>${d.actions}</td><td>${d.reussites}</td><td>${formatMoney(d.gains)}</td></tr>`;
+    }).join("") : `<tr class="empty-row"><td colspan="${
+      type === "drogue" ? (toutesDrogues ? PRODUITS_DROGUE.length + 3 : 4)
+      : type === "action" ? (toutesActions ? nomsActionsClassiques.length + 3 : 4)
+      : 5
+    }">Aucune donnée</td></tr>`;
+
+    if (classement.length && isSpecific) {
+      const totalGains = classement.reduce((acc, [, d]) => acc + d.gains, 0);
+      if (toutesDrogues) {
+        const totauxDrogue = PRODUITS_DROGUE.map(dn => classement.reduce((acc, [, d]) => acc + (d.parDrogue[dn] || 0), 0));
+        lignesClassement += `<tr style="font-weight:bold;border-top:1px solid var(--gold)"><td></td><td>Total</td>${totauxDrogue.map(t => `<td>${t}</td>`).join("")}<td>${formatMoney(totalGains)}</td></tr>`;
+      } else if (toutesActions) {
+        const totauxAction = nomsActionsClassiques.map(an => classement.reduce((acc, [, d]) => acc + (d.parAction[an] || 0), 0));
+        lignesClassement += `<tr style="font-weight:bold;border-top:1px solid var(--gold)"><td></td><td>Total</td>${totauxAction.map(t => `<td>${t}</td>`).join("")}<td>${formatMoney(totalGains)}</td></tr>`;
+      } else {
+        const totalQte = classement.reduce((acc, [, d]) => acc + d.qte, 0);
+        const label = type === "drogue" ? drogueNom : actionNomClassement;
+        lignesClassement += `<tr style="font-weight:bold;border-top:1px solid var(--gold)"><td></td><td>Total</td><td>${label} : ${totalQte}</td><td>${formatMoney(totalGains)}</td></tr>`;
+      }
+    }
+
+    document.getElementById("tblClassement").innerHTML = lignesClassement;
+  }
+
+  document.getElementById("theadSemainesActions").textContent = type === "drogue" ? "Quantité vendue" : (type === "action" ? "Quantité réalisée" : "Actions");
+  const semainesAffichees = semaineFiltre === "toutes" ? SEMAINES : SEMAINES.filter(s => s.id === semaineFiltre);
+  const lignesSemaines = semainesAffichees.map(s => {
+    const acts = base.filter(a => a.semaineId === s.id);
+    const gSale = acts.reduce((acc, a) => acc + Number(a.argent_sale || 0), 0);
+    const gPropre = acts.reduce((acc, a) => acc + Number(a.argent_propre || 0), 0);
+    const valActions = isSpecific ? acts.filter(a => a.resultat === "Réussite").reduce((acc, a) => acc + Number(a.quantite || 0), 0) : acts.length;
+    return `<tr><td>${s.nom}</td><td>${valActions}</td><td>${formatMoney(gSale)}</td><td>${formatMoney(gPropre)}</td></tr>`;
+  });
+  document.getElementById("tblSemaines").innerHTML = lignesSemaines.length ? lignesSemaines.join("") : '<tr class="empty-row"><td colspan="4">Aucune semaine</td></tr>';
+}
+
+(async function () {
+  await authReady;
+  SESSION = await initShell("stats", "Stats");
+  if (!SESSION) return;
+  renderContent();
+  await init();
+})();
+</script>
+</body>
+</html>

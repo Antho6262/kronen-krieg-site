@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Blanchiment — Kronen Krieg</title>
+<link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+<div id="shell"></div>
+
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+<script src="../js/firebase-config.js"></script>
+<script src="../js/app.js"></script>
+<script>
+let SESSION, TAUX = 35;
+
+function renderContent() {
+  document.getElementById("content").innerHTML = `
+    <h1>Blanchiment</h1>
+    <div class="sigil-rule"></div>
+
+    <div class="panel mt16">
+      <div class="panel-head"><h2>Nouveau blanchiment — taux actuel : <span id="tauxLabel">35</span>% de frais</h2></div>
+      <div class="row">
+        <div><label class="l">Description</label><input type="text" id="bDesc" placeholder="Ex: Blanchiment via le pressing"></div>
+        <div><label class="l">Montant sale ($)</label><input type="number" id="bMontant" oninput="calcApercu()"></div>
+        <div style="display:flex;flex-direction:column;"><label class="l">Récupéré (propre)</label><div class="stat-num gold" id="apercuPropre" style="font-size:20px;">0 $</div></div>
+      </div>
+      <button class="btn btn-primary mt16" onclick="blanchir()">Lancer le blanchiment</button>
+      <p class="small muted mt8">Le taux de frais se configure dans Admin → Config.</p>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h2>Historique</h2></div>
+      <table><thead><tr><th>Date</th><th>Description</th><th>Sale</th><th>Frais</th><th>Propre récupéré</th><th>Par</th>${SESSION.role === 'admin' ? '<th></th>' : ''}</tr></thead>
+        <tbody id="tblHisto"><tr class="empty-row"><td colspan="${SESSION.role === 'admin' ? 7 : 6}">Chargement…</td></tr></tbody></table>
+    </div>
+  `;
+}
+
+function calcApercu() {
+  const montant = Number(document.getElementById("bMontant").value) || 0;
+  const propre = Math.round(montant * (1 - TAUX / 100));
+  document.getElementById("apercuPropre").textContent = formatMoney(propre);
+}
+
+async function blanchir() {
+  const desc = document.getElementById("bDesc").value.trim() || "Blanchiment";
+  const montant = Number(document.getElementById("bMontant").value) || 0;
+  if (montant <= 0) { toast("Montant invalide.", true); return; }
+  const frais = Math.round(montant * TAUX / 100);
+  const propre = montant - frais;
+  const date = todayISO();
+
+  await db.ref("blanchiments/" + uid()).set({ date, description: desc, montant_sale: montant, montant_propre: propre, frais, responsable: SESSION.prenom, createdAt: Date.now() });
+  await db.ref("argent/sale/" + uid()).set({ date, description: desc, type: "Sortie", montant, responsable: SESSION.prenom, createdAt: Date.now() });
+  await db.ref("argent/propre/" + uid()).set({ date, description: desc + " (blanchi)", type: "Entrée", montant: propre, responsable: SESSION.prenom, createdAt: Date.now() });
+
+  toast("Blanchiment effectué : " + formatMoney(propre) + " récupérés.");
+  document.getElementById("bDesc").value = ""; document.getElementById("bMontant").value = ""; calcApercu();
+  chargerHisto();
+}
+
+async function supprimerBlanchiment(id, montantSale, montantPropre, desc, date) {
+  if (!confirm("Annuler ce blanchiment ? Les mouvements d'argent associés seront supprimés.")) return;
+  await db.ref("blanchiments/" + id).remove();
+  // rollback argent : supprimer les lignes correspondantes
+  const [snapSale, snapPropre] = await Promise.all([db.ref("argent/sale").once("value"), db.ref("argent/propre").once("value")]);
+  entries(snapSale.val()).forEach(([k, l]) => { if (l.montant === montantSale && l.date === date) db.ref("argent/sale/" + k).remove(); });
+  entries(snapPropre.val()).forEach(([k, l]) => { if (l.montant === montantPropre && l.date === date) db.ref("argent/propre/" + k).remove(); });
+  toast("Blanchiment annulé.");
+  chargerHisto();
+}
+
+async function chargerHisto() {
+  const snap = await db.ref("blanchiments").once("value");
+  const list = entries(snap.val()).map(([id, b]) => ({ id, ...b })).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  const isAdmin = SESSION.role === "admin";
+  document.getElementById("tblHisto").innerHTML = list.length ? list.map(b => `
+    <tr><td>${b.date}</td><td>${b.description}</td><td>${formatMoney(b.montant_sale)}</td><td class="muted">${formatMoney(b.frais)}</td><td class="mono" style="color:var(--gold)">${formatMoney(b.montant_propre)}</td><td>${b.responsable}</td>
+    ${isAdmin ? `<td><span class="btn btn-sm btn-danger" onclick="supprimerBlanchiment('${b.id}',${b.montant_sale},${b.montant_propre},'${b.description}','${b.date}')">Annuler</span></td>` : ""}
+    </tr>
+  `).join("") : `<tr class="empty-row"><td colspan="${isAdmin ? 7 : 6}">Aucun blanchiment</td></tr>`;
+}
+
+(async function () {
+  await authReady;
+  SESSION = await initShell("blanchiment", "Blanchiment");
+  if (!SESSION) return;
+  const snapCfg = await db.ref("config/blanchiment_taux").once("value");
+  TAUX = Number(snapCfg.val()) || 35;
+  renderContent();
+  document.getElementById("tauxLabel").textContent = TAUX;
+  await chargerHisto();
+})();
+</script>
+</body>
+</html>

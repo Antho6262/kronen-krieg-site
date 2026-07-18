@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tracker — Kronen Krieg</title>
+<link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+<div id="shell"></div>
+
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+<script src="../js/firebase-config.js"></script>
+<script src="../js/app.js"></script>
+<script>
+let SESSION, ACTIVE_WEEK = null, MEMBRES = {}, ACTIONS_DISPO = {}, STOCK = {}, GRADES_MASQUES = new Set(), EVENT_ACTIF = null;
+
+async function getActiveWeek() {
+  const snap = await db.ref("semaines").once("value");
+  const list = entries(snap.val()).map(([id, s]) => ({ id, ...s }));
+  list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  return list.find(s => s.bloquee !== true) || list[0] || null;
+}
+
+function renderContent() {
+  document.getElementById("content").innerHTML = `
+    <h1>Tracker</h1>
+    <div class="sigil-rule"></div>
+    <p class="muted small" id="weekLabel">Semaine active : —</p>
+
+    <div class="panel mt16">
+      <div class="panel-head"><h2>Nouvelle action</h2></div>
+      <div class="row">
+        <div><label class="l">Membre</label><select id="fMembre" onchange="renderEquipeCheckboxes()"></select></div>
+        <div><label class="l">Action</label><select id="fAction" onchange="onActionChange()"></select></div>
+        <div><label class="l">Quantité</label><input type="number" id="fQte" value="1" min="1" onchange="autoFillMontants()"></div>
+      </div>
+      <div class="row mt8" id="produitVarWrap" style="display:none;">
+        <div><label class="l">Produit</label><select id="fProduitVar"></select></div>
+      </div>
+      <div class="row mt8" id="equipeWrap" style="display:none;">
+        <div style="width:100%;">
+          <label class="l">Membres participants (en plus du membre principal — autant que vous voulez)</label>
+          <div id="equipeCheckboxes" class="row" style="flex-wrap:wrap;gap:10px;"></div>
+        </div>
+      </div>
+      <div class="row mt8">
+        <div><label class="l">Résultat</label><select id="fResultat" onchange="toggleRaison()"><option>Réussite</option><option>Échec</option></select></div>
+        <div id="raisonWrap" style="display:none;"><label class="l">Raison de l'échec</label><input type="text" id="fRaison" placeholder="Optionnel"></div>
+        <div><label class="l">Date</label><input type="date" id="fDate"></div>
+      </div>
+      <div class="row mt8">
+        <div><label class="l">Argent sale ($)</label><input type="number" id="fSale" value="0"></div>
+        <div><label class="l">Argent propre ($)</label><input type="number" id="fPropre" value="0"></div>
+        <div style="display:flex;align-items:flex-end;"><button class="btn btn-primary" style="width:100%;" onclick="ajouterAction()">Enregistrer</button></div>
+      </div>
+      <div id="eventTrackerBanner"></div>
+      <p class="small muted mt8">Le stock lié à l'action (recette définie dans Admin → Actions) est déduit automatiquement si le résultat est "Réussite".</p>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Historique — ${ACTIVE_WEEK ? ACTIVE_WEEK.nom : ""}</h2>
+        <div class="row" style="max-width:520px;">
+          <select id="filtMembre" onchange="renderTable()"><option value="">Tous les membres</option></select>
+          <select id="filtAction" onchange="renderTable()"><option value="">Toutes les actions</option></select>
+          <select id="filtResultat" onchange="renderTable()"><option value="">Tous résultats</option><option>Réussite</option><option>Échec</option></select>
+          <select id="filtLimite" onchange="renderTable()"><option value="10">Afficher 10</option><option value="30">Afficher 30</option><option value="50">Afficher 50</option><option value="9999">Tout afficher</option></select>
+        </div>
+      </div>
+      <table>
+        <thead><tr><th>Date</th><th>Membre</th><th>Action</th><th>Qté</th><th>Résultat</th><th>Sale</th><th>Propre</th><th></th></tr></thead>
+        <tbody id="tblActions"><tr class="empty-row"><td colspan="8">Chargement…</td></tr></tbody>
+      </table>
+    </div>
+  `;
+  document.getElementById("fDate").value = todayISO();
+}
+
+function toggleRaison() {
+  document.getElementById("raisonWrap").style.display = document.getElementById("fResultat").value === "Échec" ? "block" : "none";
+}
+
+function onActionChange() {
+  const actId = document.getElementById("fAction").value;
+  const act = ACTIONS_DISPO[actId];
+  const wrap = document.getElementById("produitVarWrap");
+  const sel = document.getElementById("fProduitVar");
+  if (act && act.cat_variable && STOCK[act.cat_variable]) {
+    wrap.style.display = "block";
+    const cat = STOCK[act.cat_variable];
+    sel.innerHTML = Object.entries(cat.produits || {}).map(([pid, p]) => `<option value="${pid}">${p.nom}</option>`).join("") || '<option value="">Aucun produit dans cette catégorie</option>';
+  } else {
+    wrap.style.display = "none";
+    sel.innerHTML = "";
+  }
+  document.getElementById("equipeWrap").style.display = (act && act.nom === "Fleeca") ? "block" : "none";
+  renderEquipeCheckboxes();
+
+  // bannière event drogue
+  const banner = document.getElementById("eventTrackerBanner");
+  const isDrogue = act && act.cat_variable;
+  if (isDrogue && EVENT_ACTIF) {
+    const fin = new Date(EVENT_ACTIF.fin).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+    const lignes = [];
+    if (EVENT_ACTIF.taux) lignes.push(`Drogue <strong style="color:var(--gold)">${EVENT_ACTIF.taux}%</strong>`);
+    if (EVENT_ACTIF.taux_actions) lignes.push(`Actions <strong style="color:var(--gold)">${EVENT_ACTIF.taux_actions}%</strong>`);
+    banner.innerHTML = `<div style="margin:10px 0;padding:12px 18px;border-radius:6px;background:linear-gradient(135deg,rgba(212,175,55,0.25),rgba(212,175,55,0.08));border:2px solid var(--gold);text-align:center;animation:pulse 2s infinite;">
+      🎯 <strong style="color:var(--gold)">EVENT EN COURS</strong> — ${lignes.join(" · ")} jusqu'à <strong style="color:var(--gold)">${fin}</strong>
+    </div>`;
+  } else if (!isDrogue && EVENT_ACTIF && EVENT_ACTIF.taux_actions) {
+    const fin = new Date(EVENT_ACTIF.fin).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+    banner.innerHTML = `<div style="margin:10px 0;padding:12px 18px;border-radius:6px;background:linear-gradient(135deg,rgba(212,175,55,0.25),rgba(212,175,55,0.08));border:2px solid var(--gold);text-align:center;animation:pulse 2s infinite;">
+      🎯 <strong style="color:var(--gold)">EVENT EN COURS</strong> — Actions à <strong style="color:var(--gold)">${EVENT_ACTIF.taux_actions}%</strong> jusqu'à <strong style="color:var(--gold)">${fin}</strong>
+    </div>`;
+  } else {
+    banner.innerHTML = "";
+  }
+
+  autoFillMontants();
+}
+
+function estActionEquipe() {
+  const act = ACTIONS_DISPO[document.getElementById("fAction").value];
+  return !!(act && act.nom === "Fleeca");
+}
+
+function renderEquipeCheckboxes() {
+  if (!estActionEquipe()) return;
+  const mainId = document.getElementById("fMembre").value;
+  const box = document.getElementById("equipeCheckboxes");
+  box.innerHTML = entries(MEMBRES).filter(([id, m]) => m.actif !== false && id !== mainId && !GRADES_MASQUES.has(m.grade)).map(([id, m]) =>
+    `<label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" value="${id}" class="chkEquipe"> ${m.prenom}</label>`
+  ).join("");
+}
+
+function autoFillMontants() {
+  const actId = document.getElementById("fAction").value;
+  const qte = Number(document.getElementById("fQte").value) || 0;
+  const act = ACTIONS_DISPO[actId];
+  if (!act) return;
+  document.getElementById("fSale").value = Math.round((Number(act.montant_sale) || 0) * qte);
+  document.getElementById("fPropre").value = Math.round((Number(act.montant_propre) || 0) * qte);
+}
+
+async function chargerListes() {
+  const [snapM, snapA, snapS, snapG] = await Promise.all([
+    db.ref("membres").once("value"), db.ref("actions_dispo").once("value"), db.ref("stock").once("value"), db.ref("visibilite_grades").once("value")
+  ]);
+  MEMBRES = snapM.val() || {};
+  ACTIONS_DISPO = snapA.val() || {};
+  STOCK = snapS.val() || {};
+  const visi = snapG.val() || {};
+  const gradesMasques = new Set(Object.keys(visi).filter(g => visi[g] && visi[g].tracker === false));
+  GRADES_MASQUES = gradesMasques;
+
+  const selM = document.getElementById("fMembre"), filtM = document.getElementById("filtMembre");
+  entries(MEMBRES).forEach(([id, m]) => {
+    if (m.actif === false || gradesMasques.has(m.grade)) return;
+    const label = m.prenom + (m.nom ? " " + m.nom : "");
+    selM.appendChild(new Option(label, id, id === SESSION.id, id === SESSION.id));
+    filtM.appendChild(new Option(label, id));
+  });
+
+  const selA = document.getElementById("fAction"), filtA = document.getElementById("filtAction");
+  const actEntries = entries(ACTIONS_DISPO).filter(([, a]) => a.nom !== "Labo");
+  if (!actEntries.length) {
+    selA.innerHTML = '<option value="">Aucune action — à créer dans Admin</option>';
+  } else {
+    actEntries.forEach(([id, a]) => {
+      selA.appendChild(new Option(a.nom, id));
+      filtA.appendChild(new Option(a.nom, id));
+    });
+  }
+  onActionChange();
+}
+
+async function deduireStock(actionDef, quantite) {
+  if (!actionDef.recipe || !actionDef.recipe.length) return;
+  for (const item of actionDef.recipe) {
+    const ref = db.ref(`stock/${item.catId}/produits/${item.prodId}/stock`);
+    const snap = await ref.once("value");
+    const current = Number(snap.val()) || 0;
+    const newStock = Math.max(0, current - Number(item.qty) * quantite);
+    await ref.set(newStock);
+    await db.ref("journal_stock/" + uid()).set({
+      date: todayISO(), membre: SESSION.prenom, action: actionDef.nom,
+      quantite: Number(item.qty) * quantite,
+      produit: (STOCK[item.catId] && STOCK[item.catId].produits && STOCK[item.catId].produits[item.prodId]) ? STOCK[item.catId].produits[item.prodId].nom : item.prodId,
+      createdAt: Date.now()
+    });
+  }
+}
+
+async function ajouterAction() {
+  if (!ACTIVE_WEEK) { toast("Aucune semaine active.", true); return; }
+  if (ACTIVE_WEEK.bloquee) { toast("La semaine active est bloquée.", true); return; }
+  const membreId = document.getElementById("fMembre").value;
+  const actionId = document.getElementById("fAction").value;
+  const qte = Number(document.getElementById("fQte").value) || 0;
+  const resultat = document.getElementById("fResultat").value;
+  const raison = document.getElementById("fRaison").value;
+  const sale = Number(document.getElementById("fSale").value) || 0;
+  const propre = Number(document.getElementById("fPropre").value) || 0;
+  const m = MEMBRES[membreId], act = ACTIONS_DISPO[actionId];
+  if (!m || !act || qte <= 0) { toast("Complétez le formulaire.", true); return; }
+  if (act.cat_variable && !document.getElementById("fProduitVar").value) { toast("Choisissez un produit.", true); return; }
+
+  let participantsIds = [];
+  if (act.nom === "Fleeca") {
+    participantsIds = Array.from(document.querySelectorAll(".chkEquipe:checked")).map(c => c.value);
+  }
+
+  const entry = {
+    membre_id: membreId, prenom_membre: m.prenom, nom_membre: m.nom || "", grade_membre: m.grade || "",
+    action: act.nom, action_id: actionId, quantite: qte,
+    date: document.getElementById("fDate").value || todayISO(), heure: nowHHMM(),
+    resultat, raison_echec: resultat === "Échec" ? raison : "",
+    argent_sale: sale, argent_propre: propre, gains_totaux: sale + propre,
+    createdAt: Date.now()
+  };
+  if (participantsIds.length) {
+    entry.participants_ids = participantsIds;
+    entry.participants_noms = participantsIds.map(id => MEMBRES[id] ? MEMBRES[id].prenom : "?");
+  }
+  if (act.cat_variable) {
+    const pid = document.getElementById("fProduitVar").value;
+    const prod = STOCK[act.cat_variable].produits[pid];
+    entry.produit_drogue = prod.nom;
+    entry.produit_drogue_id = pid;
+  }
+  await db.ref("actions/" + ACTIVE_WEEK.id + "/" + uid()).set(entry);
+
+  if (resultat === "Réussite") {
+    if (act.cat_variable) {
+      const pid = document.getElementById("fProduitVar").value;
+      const ref = db.ref(`stock/${act.cat_variable}/produits/${pid}/stock`);
+      const snap = await ref.once("value");
+      const current = Number(snap.val()) || 0;
+      const next = Math.max(0, current - qte);
+      await ref.set(next);
+      await db.ref("journal_stock/" + uid()).set({ date: entry.date, membre: m.prenom, action: act.nom, quantite: qte, produit: entry.produit_drogue, createdAt: Date.now() });
+    }
+    await deduireStock(act, qte);
+    if (sale > 0) await db.ref("argent/sale/" + uid()).set({ date: entry.date, description: "Action : " + act.nom, type: "Entrée", montant: sale, responsable: m.prenom, createdAt: Date.now() });
+    if (propre > 0) await db.ref("argent/propre/" + uid()).set({ date: entry.date, description: "Action : " + act.nom, type: "Entrée", montant: propre, responsable: m.prenom, createdAt: Date.now() });
+  }
+
+  toast("Action enregistrée.");
+  await renderTable();
+  await chargerListes();
+}
+
+let ALL_ACTIONS = [];
+async function renderTable() {
+  const snap = await db.ref("actions/" + (ACTIVE_WEEK ? ACTIVE_WEEK.id : "x")).once("value");
+  ALL_ACTIONS = entries(snap.val()).map(([id, a]) => ({ id, ...a })).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+
+  const fm = document.getElementById("filtMembre").value;
+  const fa = document.getElementById("filtAction").value;
+  const fr = document.getElementById("filtResultat").value;
+  const limite = Number(document.getElementById("filtLimite").value) || 10;
+  const rows = ALL_ACTIONS.filter(a =>
+    (!fm || a.membre_id === fm) && (!fa || a.action_id === fa) && (!fr || a.resultat === fr)
+  ).slice(0, limite);
+
+  const canDelete = SESSION.role === "admin";
+  document.getElementById("tblActions").innerHTML = rows.length ? rows.map(a => `
+    <tr>
+      <td>${a.date} ${a.heure || ""}</td>
+      <td>${a.prenom_membre}</td>
+      <td>${a.action}${a.produit_drogue ? ` <span class="muted small">(${a.produit_drogue})</span>` : ""}${a.participants_noms && a.participants_noms.length ? ` <span class="muted small">+ ${a.participants_noms.join(", ")}</span>` : ""}</td>
+      <td>${a.quantite}</td>
+      <td><span class="badge ${a.resultat === 'Réussite' ? 'badge-ok' : 'badge-fail'}">${a.resultat}</span></td>
+      <td>${formatMoney(a.argent_sale)}</td>
+      <td>${formatMoney(a.argent_propre)}</td>
+      <td>${a.membre_id === SESSION.id || canDelete ? `<span class="btn btn-sm" onclick="modifierAction('${a.id}')">Modifier</span>` : ""} ${canDelete ? `<span class="btn btn-sm btn-danger" onclick="supprimerAction('${a.id}')">Suppr.</span>` : ""}</td>
+    </tr>`).join("") : '<tr class="empty-row"><td colspan="8">Aucune action enregistrée</td></tr>';
+}
+
+async function modifierAction(id) {
+  const a = ALL_ACTIONS.find(x => x.id === id);
+  if (!a) return;
+
+  const nomsActions = Object.values(ACTIONS_DISPO).filter(x => x.nom !== "Labo").map(x => x.nom).join(", ");
+  const nouveauNomAction = window.prompt("Action (" + nomsActions + ") :", a.action);
+  if (nouveauNomAction === null) return;
+  const actionDef = Object.entries(ACTIONS_DISPO).find(([, x]) => x.nom === nouveauNomAction.trim()) || [a.action_id, ACTIONS_DISPO[a.action_id]];
+
+  let produitDrogue = a.produit_drogue, produitDrogueId = a.produit_drogue_id;
+  if (actionDef[1] && actionDef[1].cat_variable && STOCK[actionDef[1].cat_variable]) {
+    const produitsDispo = Object.values(STOCK[actionDef[1].cat_variable].produits || {}).map(p => p.nom).join(", ");
+    const nouveauProduit = window.prompt("Produit (" + produitsDispo + ") :", a.produit_drogue || "");
+    if (nouveauProduit === null) return;
+    const prodEntry = Object.entries(STOCK[actionDef[1].cat_variable].produits || {}).find(([, p]) => p.nom === nouveauProduit.trim());
+    if (prodEntry) { produitDrogueId = prodEntry[0]; produitDrogue = prodEntry[1].nom; }
+  }
+
+  const qte = window.prompt("Quantité :", a.quantite);
+  if (qte === null) return;
+  const sale = window.prompt("Argent sale :", a.argent_sale);
+  if (sale === null) return;
+  const propre = window.prompt("Argent propre :", a.argent_propre);
+  if (propre === null) return;
+  const resultat = window.prompt("Résultat (Réussite / Échec) :", a.resultat);
+  if (resultat === null) return;
+  const nouveauResultat = resultat.trim() || a.resultat;
+  const nouvelleQte = Number(qte) || 0;
+
+  // rollback du stock déduit par l'ancienne version de l'action (si elle était une réussite)
+  if (a.resultat === "Réussite") {
+    const ancienDef = ACTIONS_DISPO[a.action_id];
+    if (a.produit_drogue_id && ancienDef && ancienDef.cat_variable) {
+      const ref = db.ref(`stock/${ancienDef.cat_variable}/produits/${a.produit_drogue_id}/stock`);
+      const snap = await ref.once("value");
+      await ref.set((Number(snap.val()) || 0) + Number(a.quantite || 0));
+    }
+    if (ancienDef && ancienDef.recipe && ancienDef.recipe.length) {
+      for (const item of ancienDef.recipe) {
+        const ref = db.ref(`stock/${item.catId}/produits/${item.prodId}/stock`);
+        const snap = await ref.once("value");
+        await ref.set((Number(snap.val()) || 0) + Number(item.qty) * Number(a.quantite || 0));
+      }
+    }
+  }
+
+  // application du stock pour la nouvelle version (si résultat Réussite)
+  if (nouveauResultat === "Réussite" && actionDef[1]) {
+    if (produitDrogueId && actionDef[1].cat_variable) {
+      const ref = db.ref(`stock/${actionDef[1].cat_variable}/produits/${produitDrogueId}/stock`);
+      const snap = await ref.once("value");
+      await ref.set(Math.max(0, (Number(snap.val()) || 0) - nouvelleQte));
+    }
+    if (actionDef[1].recipe && actionDef[1].recipe.length) {
+      await deduireStock(actionDef[1], nouvelleQte);
+    }
+  }
+
+  const update = {
+    quantite: nouvelleQte,
+    argent_sale: Number(sale) || 0,
+    argent_propre: Number(propre) || 0,
+    gains_totaux: (Number(sale) || 0) + (Number(propre) || 0),
+    resultat: nouveauResultat
+  };
+  if (actionDef[0]) { update.action = actionDef[1].nom; update.action_id = actionDef[0]; }
+  if (produitDrogueId) { update.produit_drogue = produitDrogue; update.produit_drogue_id = produitDrogueId; }
+
+  await db.ref("actions/" + ACTIVE_WEEK.id + "/" + id).update(update);
+  toast("Action modifiée, stock ajusté.");
+  await chargerListes();
+  await renderTable();
+}
+
+async function supprimerAction(id) {
+  if (!confirm("Supprimer cette action ? Le stock déjà déduit ne sera pas restauré automatiquement.")) return;
+  await db.ref("actions/" + ACTIVE_WEEK.id + "/" + id).remove();
+  toast("Action supprimée.");
+  renderTable();
+}
+
+(async function () {
+  await authReady;
+  SESSION = await initShell("tracker", "Tracker");
+  if (!SESSION) return;
+  ACTIVE_WEEK = await getActiveWeek();
+  renderContent();
+  await chargerListes();
+  await renderTable();
+
+  db.ref("events_drogue").on("value", snap => {
+    const now = Date.now();
+    const events = entries(snap.val() || {}).map(([, e]) => e);
+    EVENT_ACTIF = events.find(e => now >= e.debut && now <= e.fin) || null;
+  });
+})();
+</script>
+</body>
+</html>

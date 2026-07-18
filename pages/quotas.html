@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Quotas — Kronen Krieg</title>
+<link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+<div id="shell"></div>
+
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+<script src="../js/firebase-config.js"></script>
+<script src="../js/app.js"></script>
+<script>
+let SESSION;
+
+async function getActiveWeek() {
+  const snap = await db.ref("semaines").once("value");
+  const list = entries(snap.val()).map(([id, s]) => ({ id, ...s }));
+  list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  return list.find(s => s.bloquee !== true) || list[0] || null;
+}
+
+function renderContent() {
+  document.getElementById("content").innerHTML = `
+    <h1>Quotas</h1>
+    <div class="sigil-rule"></div>
+    <p class="muted small">Quota global = nombre d'actions attendu par membre sur la semaine active. ${SESSION.role === 'admin' ? 'Modifiable dans Admin → Quotas.' : ''}</p>
+    <div class="panel mt16">
+      <table><thead><tr><th>Membre</th><th>Quota / semaine</th><th>Réalisé</th><th>Progression</th></tr></thead>
+        <tbody id="tblQuotas"><tr class="empty-row"><td colspan="4">Chargement…</td></tr></tbody></table>
+    </div>
+    <div id="quotasProduitsWrap"></div>
+  `;
+}
+
+function barreHtml(pct) {
+  return `<div style="background:var(--bg-2); border-radius:6px; height:8px; overflow:hidden; min-width:90px;">
+    <div style="height:100%; width:${Math.min(100, pct)}%; background:${pct >= 100 ? 'var(--success)' : 'var(--steel)'};"></div></div>`;
+}
+
+async function chargerQuotasProduits(membres, actions) {
+  const wrap = document.getElementById("quotasProduitsWrap");
+  const [snapA, snapS, snapQ] = await Promise.all([
+    db.ref("actions_dispo").once("value"), db.ref("stock").once("value"), db.ref("quotas_categorie").once("value")
+  ]);
+  const actionsDispo = snapA.val() || {};
+  const stock = snapS.val() || {};
+  const quotasCategorie = snapQ.val() || {};
+
+  const catIds = [...new Set(Object.values(actionsDispo).map(a => a.cat_variable).filter(Boolean))];
+  if (!catIds.length) { wrap.innerHTML = ""; return; }
+
+  wrap.innerHTML = catIds.map(catId => {
+    const cat = stock[catId];
+    if (!cat) return "";
+    const produitIds = new Set(Object.keys(cat.produits || {}));
+
+    return `<div class="panel">
+      <div class="panel-head"><h2>${cat.emoji || ""} Quota ${cat.nom} (toutes confondues)</h2></div>
+      <table>
+        <thead><tr><th>Membre</th><th>Cible</th><th>Réalisé</th><th>Progression</th></tr></thead>
+        <tbody>
+          ${membres.map(m => {
+            const quota = Number((quotasCategorie[m.id] || {})[catId]) || 0;
+            const fait = actions.filter(a => a.membre_id === m.id && produitIds.has(a.produit_drogue_id) && a.resultat === "Réussite")
+              .reduce((acc, a) => acc + Number(a.quantite || 0), 0);
+            const pct = quota > 0 ? Math.round(fait / quota * 100) : 0;
+            return `<tr><td>${m.prenom}</td><td>${quota}</td><td>${fait}</td><td>${barreHtml(pct)}</td></tr>`;
+          }).join("")}
+        </tbody>
+      </table>
+    </div>`;
+  }).join("");
+}
+
+async function chargerQuotas() {
+  const week = await getActiveWeek();
+  const [snapM, snapA, snapG] = await Promise.all([
+    db.ref("membres").once("value"),
+    week ? db.ref("actions/" + week.id).once("value") : Promise.resolve({ val: () => null }),
+    db.ref("visibilite_grades").once("value")
+  ]);
+  const visi = snapG.val() || {};
+  const gradesMasques = new Set(Object.keys(visi).filter(g => visi[g] && visi[g].quotas === false));
+  const membres = entries(snapM.val()).map(([id, m]) => ({ id, ...m })).filter(m => m.actif !== false && !gradesMasques.has(m.grade));
+  const actions = entries(snapA.val()).map(([id, a]) => a);
+
+  document.getElementById("tblQuotas").innerHTML = membres.length ? membres.map(m => {
+    const fait = actions.filter(a => a.membre_id === m.id && a.resultat === "Réussite" && !a.produit_drogue_id).reduce((acc, a) => acc + Number(a.quantite || 0), 0);
+    const quota = Number(m.quota) || 0;
+    const pct = quota > 0 ? Math.min(100, Math.round(fait / quota * 100)) : 0;
+    return `<tr>
+      <td>${m.prenom} ${m.nom || ""}</td>
+      <td>${quota}</td>
+      <td>${fait}</td>
+      <td style="min-width:140px;">
+        <div style="background:var(--bg-2); border-radius:6px; height:8px; overflow:hidden;">
+          <div style="height:100%; width:${pct}%; background:${pct >= 100 ? 'var(--success)' : 'var(--steel)'};"></div>
+        </div>
+      </td>
+    </tr>`;
+  }).join("") : '<tr class="empty-row"><td colspan="4">Aucun membre</td></tr>';
+
+  await chargerQuotasProduits(membres, actions);
+}
+
+(async function () {
+  await authReady;
+  SESSION = await initShell("quotas", "Quotas");
+  if (!SESSION) return;
+  renderContent();
+  await chargerQuotas();
+})();
+</script>
+</body>
+</html>

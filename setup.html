@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Initialisation — Kronen Krieg</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body class="login-body">
+
+<div class="login-wrap">
+  <div class="login-card fade-in" style="max-width:440px;">
+    <div class="login-brand">INITIALISATION</div>
+    <div class="login-sub">Usage unique — Kronen Krieg</div>
+    <div class="sigil-rule"></div>
+
+    <p class="muted small" style="line-height:1.6;">
+      Ce bouton crée la base vierge dans Firebase : un seul membre
+      (toi, en <b style="color:var(--steel)">admin</b>) avec accès total,
+      et toutes les autres données (stock, actions, semaines, membres suivants…)
+      restent vides pour être configurées depuis l'Admin.
+    </p>
+
+    <div id="warnBox" class="panel" style="display:none; border-color:rgba(193,86,76,.4); margin-top:14px;">
+      <p class="small" style="color:var(--danger); margin:0;">⚠️ Des données existent déjà dans cette base (membres trouvés). Relancer l'initialisation écrasera ce compte mais ne touchera pas le reste.</p>
+    </div>
+
+    <div class="field" style="margin-top:18px;">
+      <label>Prénom</label>
+      <input type="text" id="inpPrenom" placeholder="Ex: Max">
+    </div>
+    <div class="field" style="margin-top:10px;">
+      <label>Nom</label>
+      <input type="text" id="inpNom" placeholder="Ex: Krieger">
+    </div>
+    <div class="field" style="margin-top:10px;">
+      <label>Grade</label>
+      <input type="text" id="inpGrade" value="Fondateur">
+    </div>
+    <div class="field" style="margin-top:10px;">
+      <label>Mot de passe</label>
+      <input type="password" id="inpPass" placeholder="Choisis un mot de passe">
+    </div>
+
+    <button class="btn btn-primary" onclick="initialiser()">Initialiser le site</button>
+    <div id="statusMsg" class="login-error" style="color:var(--success);"></div>
+    <div class="login-foot"><a href="index.html">← Retour à la connexion</a></div>
+  </div>
+</div>
+
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+<script src="js/firebase-config.js"></script>
+<script src="js/app.js"></script>
+<script>
+(async function checkExisting() {
+  try {
+    const snap = await db.ref("membres").once("value");
+    if (snap.val()) document.getElementById("warnBox").style.display = "block";
+  } catch (e) {}
+})();
+
+async function initialiser() {
+  const prenom = document.getElementById("inpPrenom").value.trim();
+  const nom = document.getElementById("inpNom").value.trim();
+  const grade = document.getElementById("inpGrade").value.trim() || "Fondateur";
+  const pass = document.getElementById("inpPass").value.trim();
+  const statusEl = document.getElementById("statusMsg");
+
+  if (!prenom || !pass) {
+    statusEl.style.color = "var(--danger)";
+    statusEl.textContent = "Prénom et mot de passe requis.";
+    return;
+  }
+
+  statusEl.style.color = "var(--steel)";
+  statusEl.textContent = "Initialisation en cours…";
+
+  try {
+    const adminId = (prenom + "_" + nom).toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+
+    await db.ref("membres/" + adminId).set({
+      prenom, nom, grade,
+      role: "admin",
+      mot_de_passe: pass,
+      actif: true,
+      quota: 0
+    });
+
+    await db.ref("grades/" + adminId).set({ nom: grade, ordre: 1 });
+
+    // accès total pour ce grade sur toutes les pages
+    const permsFondateur = {};
+    PAGES_DISPO.forEach(p => permsFondateur[p.page] = true);
+    await db.ref("permissions/" + grade).set(permsFondateur);
+
+    // 1ère semaine, gérée ensuite automatiquement (verrouillage dimanche 19h)
+    const now = Date.now();
+    const bounds = limitesSemaine(now);
+    const semaineId = uid();
+    await db.ref("semaines/" + semaineId).set({
+      nom: nomAutoSemaine(bounds.debut, bounds.fin),
+      bloquee: false, createdAt: now,
+      debut: bounds.debut, fin: bounds.fin, verrouAt: bounds.verrouAt, auto: true
+    });
+    await db.ref("semaine_index/" + bounds.debut).set(semaineId);
+
+    // structures vides prêtes à être remplies depuis l'Admin
+    await db.ref("config").update({
+      blanchiment_taux: 35,
+      nom_groupe: "Kronen Krieg"
+    });
+
+    statusEl.style.color = "var(--success)";
+    statusEl.textContent = "✅ Site initialisé. Redirection…";
+    setTimeout(() => window.location.href = "index.html", 1400);
+  } catch (e) {
+    statusEl.style.color = "var(--danger)";
+    statusEl.textContent = "Erreur : " + e.message + " (vérifiez js/firebase-config.js et les règles de la base).";
+  }
+}
+</script>
+</body>
+</html>

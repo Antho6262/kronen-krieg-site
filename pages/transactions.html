@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Transactions — Kronen Krieg</title>
+<link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+<div id="shell"></div>
+
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+<script src="../js/firebase-config.js"></script>
+<script src="../js/app.js"></script>
+<script>
+let SESSION, STOCK = {}, MEMBRES = {};
+
+function renderContent() {
+  document.getElementById("content").innerHTML = `
+    <h1>Transactions</h1>
+    <div class="sigil-rule"></div>
+    <p class="muted small">Achats/ventes de produits avec d'autres groupes. Achat → stock +qté, argent Sortie. Vente → stock -qté, argent Entrée.</p>
+
+    <div class="panel mt16">
+      <div class="panel-head"><h2>Nouvelle transaction</h2></div>
+      <div class="row">
+        <div><label class="l">Membre</label><select id="tMembre"></select></div>
+        <div><label class="l">Type</label><select id="tType"><option value="achat">Achat</option><option value="vente">Vente</option></select></div>
+        <div><label class="l">Groupe</label><input type="text" id="tGroupe" placeholder="Nom du groupe"></div>
+        <div><label class="l">Téléphone</label><input type="tel" id="tTel" placeholder="Optionnel"></div>
+      </div>
+      <div class="row mt8">
+        <div><label class="l">Produit</label><select id="tProduit"></select></div>
+        <div><label class="l">Quantité</label><input type="number" id="tQte" value="1"></div>
+        <div><label class="l">Prix unitaire ($)</label><input type="number" id="tPrix" value="0"></div>
+      </div>
+      <div class="row mt8">
+        <div><label class="l">Argent</label><select id="tTypeArgent"><option value="sale">Sale</option><option value="propre">Propre</option></select></div>
+        <div><label class="l">Date</label><input type="date" id="tDate"></div>
+        <div><label class="l">Notes</label><input type="text" id="tNotes" placeholder="Optionnel"></div>
+      </div>
+      <button class="btn btn-primary mt16" onclick="ajouterTransaction()">Enregistrer</button>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h2>Historique</h2></div>
+      <table><thead><tr><th>Date</th><th>Membre</th><th>Type</th><th>Groupe</th><th>Produit</th><th>Qté</th><th>Total</th><th>Argent</th><th></th></tr></thead>
+        <tbody id="tblTransactions"><tr class="empty-row"><td colspan="9">Chargement…</td></tr></tbody></table>
+    </div>
+  `;
+  document.getElementById("tDate").value = todayISO();
+}
+
+async function chargerProduits() {
+  const [snapS, snapM] = await Promise.all([db.ref("stock").once("value"), db.ref("membres").once("value")]);
+  STOCK = snapS.val() || {};
+  MEMBRES = snapM.val() || {};
+
+  const selM = document.getElementById("tMembre");
+  entries(MEMBRES).forEach(([id, m]) => {
+    if (m.actif === false) return;
+    selM.appendChild(new Option(m.prenom + (m.nom ? " " + m.nom : ""), id, id === SESSION.id, id === SESSION.id));
+  });
+
+  const sel = document.getElementById("tProduit");
+  sel.innerHTML = "";
+  entries(STOCK).forEach(([catId, cat]) => entries(cat.produits).forEach(([pid, p]) =>
+    sel.appendChild(new Option(`${cat.nom} — ${p.nom}`, catId + "::" + pid + "::" + (p.prix || 0)))
+  ));
+  if (!sel.options.length) sel.innerHTML = '<option value="">Aucun produit — créez le stock dans Admin</option>';
+  sel.onchange = () => { const parts = sel.value.split("::"); if (parts[2]) document.getElementById("tPrix").value = parts[2]; };
+}
+
+async function ajouterTransaction() {
+  const val = document.getElementById("tProduit").value;
+  if (!val) { toast("Sélectionnez un produit.", true); return; }
+  const [catId, pid] = val.split("::");
+  const type = document.getElementById("tType").value;
+  const qte = Number(document.getElementById("tQte").value) || 0;
+  const prix = Number(document.getElementById("tPrix").value) || 0;
+  const typeArgent = document.getElementById("tTypeArgent").value;
+  const groupe = document.getElementById("tGroupe").value.trim();
+  if (!groupe || qte <= 0) { toast("Complétez le formulaire.", true); return; }
+  const total = qte * prix;
+  const prodNom = STOCK[catId].produits[pid].nom;
+  const id = uid();
+
+  const membreId = document.getElementById("tMembre").value;
+  const m = MEMBRES[membreId] || {};
+  await db.ref("transactions/" + id).set({
+    type, groupe, telephone: document.getElementById("tTel").value.trim(),
+    produit_id: pid, produit_nom: prodNom, catId, quantite: qte, prix,
+    type_argent: typeArgent, notes: document.getElementById("tNotes").value.trim(),
+    membre_id: membreId, prenom_membre: m.prenom || SESSION.prenom,
+    date: document.getElementById("tDate").value || todayISO(), createdAt: Date.now()
+  });
+
+  const stockRef = db.ref(`stock/${catId}/produits/${pid}/stock`);
+  const snap = await stockRef.once("value");
+  const current = Number(snap.val()) || 0;
+  await stockRef.set(type === "achat" ? current + qte : Math.max(0, current - qte));
+
+  await db.ref(`argent/${typeArgent}/${id}`).set({
+    date: document.getElementById("tDate").value || todayISO(),
+    description: (type === "achat" ? "Achat" : "Vente") + " — " + prodNom + " x" + qte + " (" + groupe + ")",
+    type: type === "achat" ? "Sortie" : "Entrée", montant: total, responsable: SESSION.prenom, createdAt: Date.now()
+  });
+
+  toast("Transaction enregistrée.");
+  document.getElementById("tGroupe").value = ""; document.getElementById("tTel").value = ""; document.getElementById("tNotes").value = "";
+  await chargerTransactions();
+}
+
+async function chargerTransactions() {
+  const snap = await db.ref("transactions").once("value");
+  const list = entries(snap.val()).map(([id, t]) => ({ id, ...t })).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  const canDelete = SESSION.role === "admin";
+  document.getElementById("tblTransactions").innerHTML = list.length ? list.map(t => `
+    <tr><td>${t.date}</td><td>${t.prenom_membre || "-"}</td><td><span class="badge ${t.type === 'achat' ? 'badge-warn' : 'badge-ok'}">${t.type}</span></td><td>${t.groupe}</td>
+    <td>${t.produit_nom}</td><td>${t.quantite}</td><td>${formatMoney(t.quantite * t.prix)}</td><td>${t.type_argent}</td>
+    <td>${canDelete ? `<span class="btn btn-sm btn-danger" onclick="supprimerTransaction('${t.id}')">Suppr.</span>` : ""}</td></tr>
+  `).join("") : '<tr class="empty-row"><td colspan="8">Aucune transaction</td></tr>';
+}
+
+async function supprimerTransaction(id) {
+  if (!confirm("Supprimer cette transaction ? Le stock et l'argent seront annulés (rollback).")) return;
+  const snap = await db.ref("transactions/" + id).once("value");
+  const t = snap.val();
+  if (t) {
+    const stockRef = db.ref(`stock/${t.catId}/produits/${t.produit_id}/stock`);
+    const sSnap = await stockRef.once("value");
+    const current = Number(sSnap.val()) || 0;
+    await stockRef.set(t.type === "achat" ? Math.max(0, current - t.quantite) : current + t.quantite);
+    await db.ref(`argent/${t.type_argent}/${id}`).remove();
+  }
+  await db.ref("transactions/" + id).remove();
+  toast("Transaction supprimée et rollback effectué.");
+  chargerTransactions();
+}
+
+(async function () {
+  await authReady;
+  SESSION = await initShell("transactions", "Transactions");
+  if (!SESSION) return;
+  renderContent();
+  await chargerProduits();
+  await chargerTransactions();
+})();
+</script>
+</body>
+</html>

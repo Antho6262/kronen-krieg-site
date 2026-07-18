@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Taxes — Kronen Krieg</title>
+<link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+<div id="shell"></div>
+
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+<script src="../js/firebase-config.js"></script>
+<script src="../js/app.js"></script>
+<script>
+let SESSION, MEMBRES = {};
+
+function renderContent() {
+  document.getElementById("content").innerHTML = `
+    <h1>Taxes</h1>
+    <div class="sigil-rule"></div>
+    <p class="muted small">Taxes payées par le groupe à d'autres groupes.</p>
+
+    <div class="panel mt16">
+      <div class="panel-head"><h2>Nouvelle taxe</h2>
+        <span class="btn btn-sm btn-gold" onclick="toggleNouveauType()">➕ Nouveau type de taxe</span></div>
+      <div class="row" id="newTypeRow" style="display:none;">
+        <input type="text" id="newTypeNom" placeholder="Nom du type de taxe">
+        <button class="btn btn-sm" onclick="creerTypeTaxe()">Créer le type</button>
+      </div>
+      <div class="row mt8">
+        <div><label class="l">Groupe</label><input type="text" id="xGroupe"></div>
+        <div><label class="l">Téléphone</label><input type="tel" id="xTel" placeholder="Optionnel"></div>
+        <div><label class="l">Membre responsable</label><select id="xMembre"></select></div>
+      </div>
+      <div class="row mt8">
+        <div><label class="l">Type de taxe</label><select id="xTaxe"></select></div>
+        <div><label class="l">Montant ($)</label><input type="number" id="xMontant"></div>
+        <div><label class="l">Argent</label><select id="xTypeArgent"><option value="sale">Sale</option><option value="propre">Propre</option></select></div>
+      </div>
+      <div class="row mt8">
+        <div><label class="l">Date</label><input type="date" id="xDate"></div>
+        <div><label class="l">Notes</label><input type="text" id="xNotes" placeholder="Optionnel"></div>
+      </div>
+      <button class="btn btn-primary mt16" onclick="ajouterTaxe()">Enregistrer</button>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h2>Historique</h2></div>
+      <table><thead><tr><th>Date</th><th>Groupe</th><th>Type</th><th>Responsable</th><th>Montant</th><th>Argent</th><th></th></tr></thead>
+        <tbody id="tblTaxes"><tr class="empty-row"><td colspan="7">Chargement…</td></tr></tbody></table>
+    </div>
+  `;
+  document.getElementById("xDate").value = todayISO();
+}
+
+function toggleNouveauType() {
+  const row = document.getElementById("newTypeRow");
+  row.style.display = row.style.display === "none" ? "flex" : "none";
+}
+async function creerTypeTaxe() {
+  const nom = document.getElementById("newTypeNom").value.trim();
+  if (!nom) { toast("Nom requis.", true); return; }
+  await db.ref("types_taxes/" + uid()).set({ nom, createdAt: Date.now() });
+  document.getElementById("newTypeNom").value = "";
+  toast("Type de taxe créé.");
+  await chargerTypes();
+}
+
+async function chargerTypes() {
+  const snap = await db.ref("types_taxes").once("value");
+  const sel = document.getElementById("xTaxe");
+  const list = entries(snap.val()).map(([id, t]) => ({ id, ...t }));
+  sel.innerHTML = list.length ? list.map(t => `<option value="${t.id}">${t.nom}</option>`).join("") : '<option value="">Aucun type — créez-en un</option>';
+}
+
+async function chargerMembres() {
+  const snap = await db.ref("membres").once("value");
+  MEMBRES = snap.val() || {};
+  const sel = document.getElementById("xMembre");
+  sel.innerHTML = "";
+  entries(MEMBRES).forEach(([id, m]) => { if (m.actif !== false) sel.appendChild(new Option(m.prenom, id, id === SESSION.id, id === SESSION.id)); });
+}
+
+async function ajouterTaxe() {
+  const taxeId = document.getElementById("xTaxe").value;
+  const groupe = document.getElementById("xGroupe").value.trim();
+  const montant = Number(document.getElementById("xMontant").value) || 0;
+  const membreId = document.getElementById("xMembre").value;
+  if (!taxeId || !groupe || montant <= 0) { toast("Complétez le formulaire.", true); return; }
+  const typeArgent = document.getElementById("xTypeArgent").value;
+  const snapType = await db.ref("types_taxes/" + taxeId).once("value");
+  const taxeNom = (snapType.val() || {}).nom || "Taxe";
+  const m = MEMBRES[membreId] || {};
+  const id = uid();
+  const date = document.getElementById("xDate").value || todayISO();
+
+  await db.ref("taxes/" + id).set({
+    groupe, telephone: document.getElementById("xTel").value.trim(),
+    membre_id: membreId, prenom_membre: m.prenom || "", taxe_id: taxeId, taxe_nom: taxeNom,
+    montant, type_argent: typeArgent, notes: document.getElementById("xNotes").value.trim(), date, createdAt: Date.now()
+  });
+  await db.ref(`argent/${typeArgent}/${id}`).set({ date, description: "Taxe " + taxeNom + " — " + groupe, type: "Sortie", montant, responsable: m.prenom || SESSION.prenom, createdAt: Date.now() });
+
+  toast("Taxe enregistrée.");
+  document.getElementById("xGroupe").value = ""; document.getElementById("xMontant").value = ""; document.getElementById("xNotes").value = "";
+  chargerTaxes();
+}
+
+async function chargerTaxes() {
+  const snap = await db.ref("taxes").once("value");
+  const list = entries(snap.val()).map(([id, t]) => ({ id, ...t })).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  const canDelete = SESSION.role === "admin";
+  document.getElementById("tblTaxes").innerHTML = list.length ? list.map(t => `
+    <tr><td>${t.date}</td><td>${t.groupe}</td><td>${t.taxe_nom}</td><td>${t.prenom_membre}</td><td>${formatMoney(t.montant)}</td><td>${t.type_argent}</td>
+    <td>${canDelete ? `<span class="btn btn-sm btn-danger" onclick="supprimerTaxe('${t.id}')">Suppr.</span>` : ""}</td></tr>
+  `).join("") : '<tr class="empty-row"><td colspan="7">Aucune taxe</td></tr>';
+}
+async function supprimerTaxe(id) {
+  if (!confirm("Supprimer cette taxe ? Le montant sera réajouté automatiquement.")) return;
+  const snap = await db.ref("taxes/" + id).once("value");
+  const t = snap.val();
+  if (t) await db.ref(`argent/${t.type_argent}/${id}`).remove();
+  await db.ref("taxes/" + id).remove();
+  toast("Taxe supprimée, rollback effectué.");
+  chargerTaxes();
+}
+
+(async function () {
+  await authReady;
+  SESSION = await initShell("taxes", "Taxes");
+  if (!SESSION) return;
+  renderContent();
+  await chargerTypes();
+  await chargerMembres();
+  await chargerTaxes();
+})();
+</script>
+</body>
+</html>

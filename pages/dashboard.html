@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dashboard — Kronen Krieg</title>
+<link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+<div id="shell"></div>
+
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+<script src="../js/firebase-config.js"></script>
+<script src="../js/app.js"></script>
+<script>
+let SESSION;
+let ACTIVE_WEEK_ID = null, ACTIONS_REF = null;
+let DATA = { semaines: {}, argentSale: {}, argentPropre: {}, stock: {}, membres: {}, actions: {} };
+let lastActionCount = null;
+
+function renderContent() {
+  document.getElementById("content").innerHTML = `
+    <h1>Dashboard</h1>
+    <div class="sigil-rule"></div>
+    <p class="muted small" id="weekLabel">Semaine active : —</p>
+    <div id="eventBanner"></div>
+
+    <div class="grid cols-4 mt16">
+      <div class="card"><h3>Solde sale</h3><div class="stat-num" id="soldeSale">0 $</div><div class="stat-sub">argent non blanchi</div></div>
+      <div class="card"><h3>Solde propre</h3><div class="stat-num gold" id="soldePropre">0 $</div><div class="stat-sub">argent blanchi</div></div>
+      <div class="card"><h3>Actions — semaine</h3><div class="stat-num" id="nbActions">0</div><div class="stat-sub" id="nbReussites">0 réussites</div></div>
+      <div class="card"><h3>Gain Total Vente de Drogue</h3><div class="stat-num gold" id="gainsTotaux">0 $</div><div class="stat-sub">cette semaine</div></div>
+    </div>
+
+    <div class="grid cols-2 mt24">
+      <div class="panel">
+        <div class="panel-head"><h2>💊 Stock Drogue</h2></div>
+        <table><thead><tr><th>Produit</th><th>Stock</th></tr></thead>
+          <tbody id="tblStockDrogue"><tr class="empty-row"><td colspan="2">Chargement…</td></tr></tbody></table>
+      </div>
+    </div>
+  `;
+}
+
+function calcSolde(val) {
+  return entries(val).reduce((acc, [, l]) => acc + (l.type === "Sortie" ? -Number(l.montant || 0) : Number(l.montant || 0)), 0);
+}
+
+function recompute() {
+  // semaine active = la plus récente non bloquée, sinon la plus récente
+  const list = entries(DATA.semaines).map(([id, s]) => ({ id, ...s })).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  const week = list.find(s => s.bloquee !== true) || list[0] || null;
+  document.getElementById("weekLabel").textContent = "Semaine active : " + (week ? week.nom : "Aucune semaine") + (week && week.bloquee ? " (bloquée)" : "");
+
+  // si la semaine active a changé, on réabonne le listener temps réel sur le bon nœud actions/{id}
+  const newWeekId = week ? week.id : null;
+  if (newWeekId !== ACTIVE_WEEK_ID) {
+    if (ACTIONS_REF) ACTIONS_REF.off("value", onActionsChange);
+    ACTIVE_WEEK_ID = newWeekId;
+    DATA.actions = {};
+    if (ACTIVE_WEEK_ID) {
+      ACTIONS_REF = db.ref("actions/" + ACTIVE_WEEK_ID);
+      ACTIONS_REF.on("value", onActionsChange);
+    } else {
+      ACTIONS_REF = null;
+      renderDerived();
+    }
+    return; // renderDerived() sera appelé par onActionsChange une fois les données reçues
+  }
+  renderDerived();
+}
+
+function onActionsChange(snap) {
+  DATA.actions = snap.val() || {};
+  renderDerived();
+}
+
+function renderDerived() {
+  // soldes (mis à jour en direct dès qu'une écriture argent/sale ou argent/propre arrive)
+  document.getElementById("soldeSale").textContent = formatMoney(calcSolde(DATA.argentSale));
+  document.getElementById("soldePropre").textContent = formatMoney(calcSolde(DATA.argentPropre));
+
+  const actions = entries(DATA.actions).map(([id, a]) => ({ id, ...a }));
+  if (lastActionCount !== null && actions.length > lastActionCount) toast("Nouvelle action enregistrée");
+  lastActionCount = actions.length;
+
+  const actionsClassiques = actions.filter(a => !a.produit_drogue_id);
+  const reussites = actionsClassiques.filter(a => a.resultat === "Réussite").length;
+  const gains = actions.filter(a => a.produit_drogue_id).reduce((acc, a) => acc + Number(a.gains_totaux || 0), 0);
+  document.getElementById("nbActions").textContent = actionsClassiques.length;
+  document.getElementById("nbReussites").textContent = reussites + " réussites";
+  document.getElementById("gainsTotaux").textContent = formatMoney(gains);
+
+  // stock drogue uniquement
+  const catDrogue = entries(DATA.stock).find(([, cat]) => (cat.nom || "").toLowerCase() === "drogue");
+  const produitsDrogue = catDrogue ? entries(catDrogue[1].produits) : [];
+  document.getElementById("tblStockDrogue").innerHTML = produitsDrogue.length
+    ? produitsDrogue.map(([, p]) => `<tr><td>${p.nom}</td><td>${p.stock}</td></tr>`).join("")
+    : '<tr class="empty-row"><td colspan="2">Aucun produit dans la catégorie Drogue</td></tr>';
+}
+
+(async function () {
+  await authReady;
+  SESSION = await initShell("dashboard", "Dashboard");
+  if (!SESSION) return;
+  renderContent();
+
+  // écoute temps réel — chaque écriture Firebase (mouvement d'argent, action, stock, membre)
+  // met à jour le dashboard instantanément, sans rechargement ni attente.
+  db.ref("semaines").on("value", snap => { DATA.semaines = snap.val() || {}; recompute(); });
+  db.ref("argent/sale").on("value", snap => { DATA.argentSale = snap.val() || {}; renderDerived(); });
+  db.ref("argent/propre").on("value", snap => { DATA.argentPropre = snap.val() || {}; renderDerived(); });
+  db.ref("stock").on("value", snap => { DATA.stock = snap.val() || {}; renderDerived(); });
+  db.ref("membres").on("value", snap => { DATA.membres = snap.val() || {}; renderDerived(); });
+
+  db.ref("events_drogue").on("value", snap => {
+    const now = Date.now();
+    const events = entries(snap.val() || {}).map(([, e]) => e);
+    const actif = events.find(e => now >= e.debut && now <= e.fin);
+    const banner = document.getElementById("eventBanner");
+    if (actif) {
+      const fin = new Date(actif.fin).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+      banner.innerHTML = `<div style="
+        margin:16px 0; padding:18px 24px; border-radius:8px;
+        background:linear-gradient(135deg,rgba(212,175,55,0.25),rgba(212,175,55,0.08));
+        border:2px solid var(--gold); text-align:center; animation:pulse 2s infinite;">
+        🎯 <strong style="color:var(--gold);font-size:1.2em;">EVENT EN COURS</strong>
+        &nbsp;—&nbsp; Vente de Drogue à <strong style="color:var(--gold)">${actif.taux}%</strong>
+        jusqu'à <strong style="color:var(--gold)">${fin}</strong>
+        ${actif.nom ? `&nbsp;·&nbsp; ${actif.nom}` : ""}
+      </div>`;
+    } else {
+      banner.innerHTML = "";
+    }
+  });
+})();
+</script>
+</body>
+</html>

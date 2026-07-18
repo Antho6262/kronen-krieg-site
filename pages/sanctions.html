@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sanctions — Kronen Krieg</title>
+<link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+<div id="shell"></div>
+
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+<script src="../js/firebase-config.js"></script>
+<script src="../js/app.js"></script>
+<script>
+let SESSION, MEMBRES = {};
+
+function renderContent() {
+  document.getElementById("content").innerHTML = `
+    <h1>Sanctions</h1>
+    <div class="sigil-rule"></div>
+
+    <div class="panel mt16">
+      <div class="panel-head"><h2>Nouvelle sanction</h2></div>
+      <div class="row">
+        <div><label class="l">Membre</label><select id="sMembre"></select></div>
+        <div><label class="l">Niveau</label><select id="sNiveau"><option>Avertissement</option><option>Mise à pied</option><option>Exclusion</option></select></div>
+        <div><label class="l">Date</label><input type="date" id="sDate"></div>
+      </div>
+      <div class="row mt8"><div style="flex:3"><label class="l">Motif</label><input type="text" id="sMotif" placeholder="Raison de la sanction"></div>
+        <div style="display:flex;align-items:flex-end;"><button class="btn btn-primary" style="width:100%" onclick="ajouterSanction()">Enregistrer</button></div></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h2>Historique</h2></div>
+      <table><thead><tr><th>Date</th><th>Membre</th><th>Niveau</th><th>Motif</th><th>Par</th><th></th></tr></thead>
+        <tbody id="tblSanctions"><tr class="empty-row"><td colspan="6">Chargement…</td></tr></tbody></table>
+    </div>
+  `;
+  document.getElementById("sDate").value = todayISO();
+}
+
+async function chargerMembres() {
+  const snap = await db.ref("membres").once("value");
+  MEMBRES = snap.val() || {};
+  const sel = document.getElementById("sMembre");
+  sel.innerHTML = "";
+  entries(MEMBRES).forEach(([id, m]) => { if (m.actif !== false) sel.appendChild(new Option(m.prenom + " " + (m.nom || ""), id)); });
+}
+
+async function ajouterSanction() {
+  const membreId = document.getElementById("sMembre").value;
+  const motif = document.getElementById("sMotif").value.trim();
+  if (!membreId || !motif) { toast("Complétez le formulaire.", true); return; }
+  const m = MEMBRES[membreId];
+  await db.ref("sanctions/" + uid()).set({
+    membre_id: membreId, prenom: m.prenom, nom: m.nom || "",
+    niveau: document.getElementById("sNiveau").value, motif,
+    par: SESSION.prenom, date: document.getElementById("sDate").value || todayISO(), createdAt: Date.now()
+  });
+  toast("Sanction enregistrée.");
+  document.getElementById("sMotif").value = "";
+  chargerSanctions();
+}
+
+async function chargerSanctions() {
+  const snap = await db.ref("sanctions").once("value");
+  const list = entries(snap.val()).map(([id, s]) => ({ id, ...s })).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  const canDelete = SESSION.role === "admin";
+  document.getElementById("tblSanctions").innerHTML = list.length ? list.map(s => `
+    <tr><td>${s.date}</td><td>${s.prenom} ${s.nom}</td>
+    <td><span class="badge ${s.niveau === 'Exclusion' ? 'badge-fail' : s.niveau === 'Mise à pied' ? 'badge-warn' : 'badge-steel'}">${s.niveau}</span></td>
+    <td>${s.motif}</td><td>${s.par}</td>
+    <td>${canDelete ? `<span class="btn btn-sm btn-danger" onclick="supprimerSanction('${s.id}')">Suppr.</span>` : ""}</td></tr>
+  `).join("") : '<tr class="empty-row"><td colspan="6">Aucune sanction</td></tr>';
+}
+async function supprimerSanction(id) { if (confirm("Supprimer cette sanction ?")) { await db.ref("sanctions/" + id).remove(); chargerSanctions(); } }
+
+(async function () {
+  await authReady;
+  SESSION = await initShell("sanctions", "Sanctions");
+  if (!SESSION) return;
+  renderContent();
+  await chargerMembres();
+  await chargerSanctions();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,753 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Admin — Kronen Krieg</title>
+<link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+<div id="shell"></div>
+
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+<script src="../js/firebase-config.js"></script>
+<script src="../js/app.js"></script>
+<script>
+let SESSION;
+const TABS = ["semaines", "membres", "stock", "actions", "quotas", "grades", "visibilite", "permissions", "config"];
+const TAB_LABELS = { visibilite: "Visibilité" };
+let currentTab = "semaines";
+
+function renderContent() {
+  document.getElementById("content").innerHTML = `
+    <h1>Admin</h1>
+    <div class="sigil-rule"></div>
+    <div class="tabs" id="tabsBar"></div>
+    <div id="tabBody"></div>
+  `;
+  document.getElementById("tabsBar").innerHTML = TABS.map(t =>
+    `<div class="tab${t === currentTab ? ' active' : ''}" onclick="switchTab('${t}')">${TAB_LABELS[t] || (t.charAt(0).toUpperCase() + t.slice(1))}</div>`
+  ).join("");
+  loadTab(currentTab);
+}
+function switchTab(t) { currentTab = t; renderContent(); }
+
+async function loadTab(t) {
+  const body = document.getElementById("tabBody");
+  body.innerHTML = '<p class="muted">Chargement…</p>';
+  if (t === "semaines") return tabSemaines(body);
+  if (t === "membres") return tabMembres(body);
+  if (t === "stock") return tabStock(body);
+  if (t === "actions") return tabActions(body);
+  if (t === "quotas") return tabQuotas(body);
+  if (t === "grades") return tabGrades(body);
+  if (t === "visibilite") return tabVisibilite(body);
+  if (t === "permissions") return tabPermissions(body);
+  if (t === "config") return tabConfig(body);
+}
+
+/* ===================== SEMAINES ===================== */
+async function tabSemaines(body) {
+  const snap = await db.ref("semaines").once("value");
+  const list = entries(snap.val()).map(([id, s]) => ({ id, ...s })).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  body.innerHTML = `
+    <div class="panel">
+      <div class="panel-head"><h2>Nouvelle semaine</h2></div>
+      <div class="row"><input type="text" id="newSemaineNom" placeholder="Nom (ex: Semaine 2)">
+      <button class="btn btn-primary" onclick="creerSemaine()">Créer</button></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h2>Semaines</h2></div>
+      <table><thead><tr><th>Nom</th><th>Statut</th><th>Créée le</th><th>Verrouillage auto</th><th></th></tr></thead>
+        <tbody>${list.length ? list.map(s => `
+          <tr><td>${s.nom}</td><td><span class="badge ${s.bloquee ? 'badge-fail' : 'badge-ok'}">${s.bloquee ? 'Bloquée' : 'Active'}</span></td>
+          <td class="small muted">${s.createdAt ? new Date(s.createdAt).toLocaleString('fr-FR') : '-'}</td>
+          <td class="small muted">${s.verrouAt ? new Date(s.verrouAt).toLocaleString('fr-FR') : '—'}</td>
+          <td>
+            ${s.bloquee ? `<span class="btn btn-sm" onclick="toggleSemaine('${s.id}', false)">Débloquer</span>`
+                        : `<span class="btn btn-sm btn-gold" onclick="bloquerSemaine('${s.id}','${s.nom}')">Bloquer + Résumé</span>`}
+            <span class="btn btn-sm btn-danger" onclick="suppSemaine('${s.id}')">Suppr.</span>
+          </td></tr>
+        `).join("") : '<tr class="empty-row"><td colspan="5">Aucune semaine</td></tr>'}</tbody></table>
+    </div>
+    <div class="panel" id="resumeWrap" style="display:none;">
+      <div class="panel-head"><h2>Résumé de semaine</h2></div>
+      <textarea id="resumeText" rows="10" readonly></textarea>
+      <p class="small muted mt8">Copie ce texte dans Discord, ou configure un webhook dans Admin → Config pour l'envoi automatique.</p>
+    </div>
+  `;
+}
+async function creerSemaine() {
+  const saisie = document.getElementById("newSemaineNom").value.trim();
+  const now = Date.now();
+  const bounds = limitesSemaine(now);
+  const nom = saisie || nomAutoSemaine(bounds.debut, bounds.fin);
+  const id = uid();
+  await db.ref("semaines/" + id).set({
+    nom, bloquee: false, createdAt: now,
+    debut: bounds.debut, fin: bounds.fin, verrouAt: bounds.verrouAt
+  });
+  await db.ref("semaine_index/" + bounds.debut).set(id);
+  toast("Semaine créée.");
+  loadTab("semaines");
+}
+async function toggleSemaine(id, bloquee) {
+  await db.ref("semaines/" + id).update({ bloquee, closedAt: bloquee ? Date.now() : null });
+  loadTab("semaines");
+}
+async function suppSemaine(id) {
+  if (!confirm("Supprimer cette semaine et toutes ses actions ?")) return;
+  await db.ref("semaines/" + id).remove();
+  await db.ref("actions/" + id).remove();
+  loadTab("semaines");
+}
+async function bloquerSemaine(id, nom) {
+  const snap = await db.ref("actions/" + id).once("value");
+  const actions = entries(snap.val()).map(([aid, a]) => a);
+  const gainsSale = actions.reduce((acc, a) => acc + Number(a.argent_sale || 0), 0);
+  const gainsPropre = actions.reduce((acc, a) => acc + Number(a.argent_propre || 0), 0);
+  const reussites = actions.filter(a => a.resultat === "Réussite").length;
+  const echecs = actions.filter(a => a.resultat === "Échec").length;
+  const parMembre = {};
+  actions.forEach(a => { parMembre[a.prenom_membre] = (parMembre[a.prenom_membre] || 0) + 1; });
+  const classement = Object.entries(parMembre).sort((a, b) => b[1] - a[1])
+    .map(([p, n], i) => `${i + 1}. ${p} — ${n} action(s)`).join("\n");
+
+  const texte = `📋 RÉSUMÉ — ${nom} — Kronen Krieg\n` +
+    `Actions : ${actions.length} (✅ ${reussites} / ❌ ${echecs})\n` +
+    `Gains sale : ${formatMoney(gainsSale)}\n` +
+    `Gains propre : ${formatMoney(gainsPropre)}\n\n` +
+    `Classement :\n${classement || "—"}`;
+
+  await db.ref("semaines/" + id).update({ bloquee: true, closedAt: Date.now() });
+  document.getElementById("resumeWrap").style.display = "block";
+  document.getElementById("resumeText").value = texte;
+
+  const cfgSnap = await db.ref("config/discord_webhook_semaine").once("value");
+  const webhook = cfgSnap.val();
+  if (webhook) {
+    try {
+      await fetch(webhook, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content: texte }) });
+      toast("Résumé envoyé sur Discord.");
+    } catch (e) { toast("Webhook configuré mais envoi impossible (CORS/URL).", true); }
+  }
+  loadTab("semaines");
+  document.getElementById("resumeWrap").style.display = "block";
+  document.getElementById("resumeText").value = texte;
+}
+
+/* ===================== MEMBRES ===================== */
+async function tabMembres(body) {
+  const [snapM, snapG, snapR] = await Promise.all([db.ref("membres").once("value"), db.ref("grades").once("value"), db.ref("reset_requests").once("value")]);
+  const membres = entries(snapM.val()).map(([id, m]) => ({ id, ...m }));
+  const grades = entries(snapG.val()).map(([id, g]) => g.nom);
+  const demandes = entries(snapR.val()).map(([id, r]) => ({ id, ...r }));
+  body.innerHTML = `
+    ${demandes.length ? `
+    <div class="panel">
+      <div class="panel-head"><h2>🔔 Demandes de mot de passe oublié (${demandes.length})</h2></div>
+      <table><thead><tr><th>Membre</th><th>Date</th><th></th></tr></thead>
+        <tbody>${demandes.map(r => `
+          <tr><td>${r.prenom} ${r.nom || ""}</td><td class="small muted">${r.date || ""}</td>
+          <td style="white-space:nowrap;">
+            <span class="btn btn-sm btn-gold" onclick="changerPassMembre('${r.membre_id}','${r.prenom}','${r.id}')">🔑 Réinitialiser</span>
+            <span class="btn btn-sm" onclick="ignorerDemande('${r.id}')">Ignorer</span>
+          </td></tr>
+        `).join("")}</tbody></table>
+    </div>` : ""}
+    <div class="panel">
+      <div class="panel-head"><h2>Ajouter un membre</h2></div>
+      <div class="row">
+        <div><label class="l">Prénom</label><input type="text" id="mPrenom"></div>
+        <div><label class="l">Nom</label><input type="text" id="mNom"></div>
+        <div><label class="l">Grade</label><select id="mGrade">${grades.map(g => `<option>${g}</option>`).join("") || '<option value="">Aucun grade — créez-en dans l\'onglet Grades</option>'}</select></div>
+      </div>
+      <div class="row mt8">
+        <div><label class="l">Rôle</label><select id="mRole"><option value="membre">Membre</option><option value="admin">Admin</option></select></div>
+        <div><label class="l">Quota perso (optionnel)</label><input type="number" id="mQuota" value="0"></div>
+        <div><label class="l">Mot de passe</label><input type="text" id="mPass" placeholder="prenom2026"></div>
+      </div>
+      <button class="btn btn-primary mt16" onclick="ajouterMembre()">Ajouter</button>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h2>Membres (${membres.length})</h2></div>
+      <table><thead><tr><th>Prénom</th><th>Nom</th><th>Grade</th><th>Quota</th><th>Rôle</th><th>Actif</th><th>Actions</th></tr></thead>
+        <tbody>${membres.length ? membres.map(m => `
+          <tr>
+            <td><input type="text" value="${m.prenom}" id="mEdPrenom_${m.id}" style="min-width:110px;"></td>
+            <td><input type="text" value="${m.nom || ''}" id="mEdNom_${m.id}" style="min-width:110px;"></td>
+            <td><select id="mEdGrade_${m.id}" style="min-width:130px;">${grades.map(g => `<option ${g === m.grade ? 'selected' : ''}>${g}</option>`).join("")}</select></td>
+            <td><input type="number" value="${Number(m.quota) || 0}" id="mEdQuota_${m.id}" style="max-width:70px;"></td>
+            <td><span class="badge ${m.role === 'admin' ? 'badge-steel' : ''}">${m.role || 'membre'}</span></td>
+            <td><span class="badge ${m.actif !== false ? 'badge-ok' : 'badge-fail'}">${m.actif !== false ? 'Actif' : 'Inactif'}</span></td>
+            <td style="white-space:nowrap;">
+              <span class="btn btn-sm btn-gold" title="Enregistrer (prénom, nom, grade, quota)" onclick="modifierMembre('${m.id}')">💾</span>
+              <span class="btn btn-sm" title="Changer le mot de passe" onclick="changerPassMembre('${m.id}','${m.prenom}')">🔑</span>
+              <span class="btn btn-sm" title="${m.role === 'admin' ? 'Retirer admin' : 'Passer admin'}" onclick="toggleAdmin('${m.id}', ${m.role !== 'admin'})">🛡️</span>
+              <span class="btn btn-sm" title="${m.actif !== false ? 'Désactiver' : 'Activer'}" onclick="toggleActif('${m.id}', ${m.actif === false})">${m.actif !== false ? '⏸️' : '▶️'}</span>
+              ${m.role === 'admin' ? '' : `<span class="btn btn-sm btn-danger" title="Supprimer le membre" onclick="suppMembre('${m.id}')">🗑️</span>`}
+            </td>
+          </tr>
+        `).join("") : '<tr class="empty-row"><td colspan="7">Aucun membre</td></tr>'}</tbody></table>
+    </div>
+  `;
+}
+async function modifierMembre(id) {
+  const prenom = document.getElementById("mEdPrenom_" + id).value.trim();
+  if (!prenom) { toast("Prénom requis.", true); return; }
+  await db.ref("membres/" + id).update({
+    prenom, nom: document.getElementById("mEdNom_" + id).value.trim(),
+    grade: document.getElementById("mEdGrade_" + id).value,
+    quota: Number(document.getElementById("mEdQuota_" + id).value) || 0
+  });
+  toast("Membre mis à jour.");
+  loadTab("membres");
+}
+async function changerPassMembre(id, prenom, requestId) {
+  const val = window.prompt("Nouveau mot de passe pour " + prenom + " :");
+  if (val === null) return;
+  if (val.trim().length < 4) { toast("Mot de passe trop court.", true); return; }
+  await db.ref("membres/" + id + "/mot_de_passe").set(val.trim());
+  if (requestId) await db.ref("reset_requests/" + requestId).remove();
+  toast("Mot de passe mis à jour.");
+  if (requestId) loadTab("membres");
+}
+async function ignorerDemande(reqId) {
+  await db.ref("reset_requests/" + reqId).remove();
+  loadTab("membres");
+}
+async function toggleAdmin(id, makeAdmin) {
+  if (!confirm(makeAdmin ? "Donner le rôle admin à ce membre ?" : "Retirer le rôle admin à ce membre ?")) return;
+  await db.ref("membres/" + id + "/role").set(makeAdmin ? "admin" : "membre");
+  toast("Rôle mis à jour.");
+  loadTab("membres");
+}
+async function ajouterMembre() {
+  const prenom = document.getElementById("mPrenom").value.trim();
+  if (!prenom) { toast("Prénom requis.", true); return; }
+  const pass = document.getElementById("mPass").value.trim() || (prenom.toLowerCase() + "2026");
+  await db.ref("membres/" + uid()).set({
+    prenom, nom: document.getElementById("mNom").value.trim(),
+    grade: document.getElementById("mGrade").value, role: document.getElementById("mRole").value,
+    mot_de_passe: pass, actif: true, quota: Number(document.getElementById("mQuota").value) || 0
+  });
+  toast("Membre ajouté.");
+  loadTab("membres");
+}
+async function toggleActif(id, val) { await db.ref("membres/" + id + "/actif").set(val); loadTab("membres"); }
+async function suppMembre(id) { if (confirm("Supprimer ce membre ?")) { await db.ref("membres/" + id).remove(); loadTab("membres"); } }
+
+/* ===================== STOCK ===================== */
+async function tabStock(body) {
+  const snap = await db.ref("stock").once("value");
+  const cats = entries(snap.val()).map(([id, c]) => ({ id, ...c }));
+  body.innerHTML = `
+    <div class="panel">
+      <div class="panel-head"><h2>Nouvelle catégorie</h2></div>
+      <div class="row"><input type="text" id="catEmoji" placeholder="Emoji (ex: 💊)" style="max-width:90px;">
+      <input type="text" id="catNom" placeholder="Nom de la catégorie">
+      <button class="btn btn-primary" onclick="creerCategorie()">Créer</button></div>
+    </div>
+    ${cats.map(c => `
+      <div class="panel">
+        <div class="panel-head"><h2>${c.emoji || "📦"} ${c.nom}</h2>
+          <span class="btn btn-sm btn-danger" onclick="suppCategorie('${c.id}')">Supprimer la catégorie</span></div>
+        <table><thead><tr><th>Produit</th><th>Prix</th><th>Stock</th><th>Seuil</th>${c.nom === "Labo" ? "<th>Recette</th>" : ""}<th></th></tr></thead>
+          <tbody>${entries(c.produits).length ? entries(c.produits).map(([pid, p]) => `
+            <tr>
+              <td><input type="text" value="${p.nom}" id="edNom_${c.id}_${pid}" style="min-width:140px;"></td>
+              <td><input type="number" value="${p.prix || 0}" id="edPrix_${c.id}_${pid}" style="max-width:90px;"></td>
+              <td><input type="number" value="${p.stock || 0}" id="edStock_${c.id}_${pid}" style="max-width:90px;"></td>
+              <td><input type="number" value="${p.seuil || 0}" id="edSeuil_${c.id}_${pid}" style="max-width:90px;"></td>
+              ${c.nom === "Labo" ? `<td class="small muted">${(p.recipe || []).map(l => `${l.qty}x ${(c.produits[l.ingredientId] || {}).nom || "?"}`).join(", ") || "—"}</td>` : ""}
+              <td style="white-space:nowrap;">
+                <span class="btn btn-sm btn-gold" onclick="modifierProduit('${c.id}','${pid}')">Enregistrer</span>
+                <span class="btn btn-sm btn-danger" onclick="suppProduit('${c.id}','${pid}')">Suppr.</span>
+              </td>
+            </tr>
+          `).join("") : `<tr class="empty-row"><td colspan="${c.nom === "Labo" ? 6 : 5}">Aucun produit</td></tr>`}</tbody></table>
+        ${c.nom === "Labo" ? `
+        <div class="panel mt16" style="background:var(--bg-1);">
+          <p class="small muted">Un produit sans recette est un ingrédient brut. Un produit avec recette consomme les ingrédients (× quantité) du stock commun pour produire le résultat.</p>
+          <div class="row">
+            <div><label class="l">Nom du produit</label><input type="text" id="laboNom" placeholder="ex: Champignon rouge, Black Trip..."></div>
+          </div>
+          <div class="row mt8">
+            <div><label class="l">Ingrédient (optionnel, pour une recette)</label><select id="laboIngredient">${entries(c.produits).map(([pid, p]) => `<option value="${pid}">${p.nom}</option>`).join("") || '<option value="">Aucun produit existant</option>'}</select></div>
+            <div><label class="l">Qté nécessaire</label><input type="number" id="laboQte" value="1" min="1"></div>
+            <div style="display:flex;align-items:flex-end;"><button class="btn" onclick="ajouterLigneRecetteLabo()">Ajouter à la recette</button></div>
+          </div>
+          <div id="laboRecetteEnCours" class="small muted mt8">Aucune ligne de recette en cours.</div>
+          <button class="btn btn-gold mt8" onclick="ajouterProduitLabo('${c.id}')">Enregistrer le produit</button>
+        </div>` : `
+        <div class="row mt16">
+          <input type="text" placeholder="Nom du produit" id="pNom_${c.id}">
+          <input type="number" placeholder="Prix" id="pPrix_${c.id}">
+          <input type="number" placeholder="Stock initial" id="pStock_${c.id}">
+          <input type="number" placeholder="Seuil d'alerte" id="pSeuil_${c.id}">
+          <button class="btn btn-gold" onclick="ajouterProduit('${c.id}')">Ajouter produit</button>
+        </div>`}
+      </div>
+    `).join("") || '<p class="muted">Aucune catégorie de stock.</p>'}
+  `;
+}
+let RECETTE_LABO_EN_COURS = [];
+function ajouterLigneRecetteLabo() {
+  const pid = document.getElementById("laboIngredient").value;
+  const qte = Number(document.getElementById("laboQte").value) || 0;
+  if (!pid || qte <= 0) { toast("Choisis un ingrédient et une quantité.", true); return; }
+  const nom = document.getElementById("laboIngredient").selectedOptions[0].textContent;
+  RECETTE_LABO_EN_COURS.push({ ingredientId: pid, qty: qte, nom });
+  document.getElementById("laboRecetteEnCours").textContent = "Recette en cours : " + RECETTE_LABO_EN_COURS.map(l => `${l.qty}x ${l.nom}`).join(", ");
+}
+async function ajouterProduitLabo(catId) {
+  const nom = document.getElementById("laboNom").value.trim();
+  if (!nom) { toast("Nom requis.", true); return; }
+  await db.ref("stock/" + catId + "/produits/" + uid()).set({
+    nom, prix: 0, stock: 0, seuil: 0,
+    recipe: RECETTE_LABO_EN_COURS.map(l => ({ ingredientId: l.ingredientId, qty: l.qty }))
+  });
+  RECETTE_LABO_EN_COURS = [];
+  toast("Produit Labo enregistré.");
+  loadTab("stock");
+}
+async function creerCategorie() {
+  const nom = document.getElementById("catNom").value.trim();
+  if (!nom) { toast("Nom requis.", true); return; }
+  await db.ref("stock/" + uid()).set({ nom, emoji: document.getElementById("catEmoji").value.trim() || "📦", produits: {} });
+  toast("Catégorie créée.");
+  loadTab("stock");
+}
+async function suppCategorie(id) { if (confirm("Supprimer cette catégorie et tous ses produits ?")) { await db.ref("stock/" + id).remove(); loadTab("stock"); } }
+async function ajouterProduit(catId) {
+  const nom = document.getElementById("pNom_" + catId).value.trim();
+  if (!nom) { toast("Nom du produit requis.", true); return; }
+  await db.ref("stock/" + catId + "/produits/" + uid()).set({
+    nom,
+    prix: Number(document.getElementById("pPrix_" + catId).value) || 0,
+    stock: Number(document.getElementById("pStock_" + catId).value) || 0,
+    seuil: Number(document.getElementById("pSeuil_" + catId).value) || 0
+  });
+  toast("Produit ajouté.");
+  loadTab("stock");
+}
+async function modifierProduit(catId, pid) {
+  const nom = document.getElementById(`edNom_${catId}_${pid}`).value.trim();
+  if (!nom) { toast("Nom requis.", true); return; }
+  await db.ref(`stock/${catId}/produits/${pid}`).update({
+    nom,
+    prix: Number(document.getElementById(`edPrix_${catId}_${pid}`).value) || 0,
+    stock: Number(document.getElementById(`edStock_${catId}_${pid}`).value) || 0,
+    seuil: Number(document.getElementById(`edSeuil_${catId}_${pid}`).value) || 0
+  });
+  toast("Produit mis à jour.");
+  loadTab("stock");
+}
+async function suppProduit(catId, pid) { if (confirm("Supprimer ce produit ?")) { await db.ref("stock/" + catId + "/produits/" + pid).remove(); loadTab("stock"); } }
+
+/* ===================== ACTIONS ===================== */
+async function tabActions(body) {
+  const [snapA, snapS] = await Promise.all([db.ref("actions_dispo").once("value"), db.ref("stock").once("value")]);
+  const actions = entries(snapA.val()).map(([id, a]) => ({ id, ...a }));
+  const cats = entries(snapS.val()).map(([id, c]) => ({ id, ...c }));
+  const prodOptions = cats.flatMap(c => entries(c.produits).map(([pid, p]) => `<option value="${c.id}::${pid}">${c.emoji || ""} ${c.nom} — ${p.nom}</option>`)).join("");
+
+  const catOptions = cats.map(c => `<option value="${c.id}">${c.emoji || ""} ${c.nom}</option>`).join("");
+
+  body.innerHTML = `
+    <div class="panel" style="border-color:rgba(212,175,55,.3);">
+      <div class="panel-head"><h2>Import rapide — actions classiques</h2></div>
+      <p class="small muted">Crée en un clic les 5 actions classiques (Vente de Drogue, ATM, Cambu, Plantation, Vente de Branches)
+      avec leurs catégories de stock associées. Tu pourras renommer/ajuster ensuite.</p>
+      <button class="btn btn-gold mt8" onclick="importerActionsClassiques()">Importer les actions classiques</button>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h2>Nouvelle action</h2></div>
+      <div class="row">
+        <input type="text" id="aNom" placeholder="Nom de l'action (ex: Vente, Cambriolage…)">
+        <input type="number" id="aSale" placeholder="$ sale / unité" value="0">
+        <input type="number" id="aPropre" placeholder="$ propre / unité" value="0">
+      </div>
+      <div class="row mt8" id="recipeBuilder">
+        <select id="recipeProd"><option value="">— Produit consommé fixe (optionnel) —</option>${prodOptions}</select>
+        <input type="number" id="recipeQty" placeholder="Qté consommée / unité" value="1">
+        <button class="btn btn-sm" onclick="addRecipeLine()" type="button">+ Ajouter à la recette</button>
+      </div>
+      <div id="recipeLines" class="small muted mt8"></div>
+      <div class="row mt8">
+        <select id="aCatVariable"><option value="">— Ou : produit choisi au moment de l'action (ex: Vente de Drogue) —</option>${catOptions}</select>
+      </div>
+      <p class="small muted mt8">Soit une recette fixe (toujours le même produit, ex: ATM → Boîtier de piratage), soit une catégorie « variable » où le membre choisit le produit exact en saisissant l'action (ex: Vente de Drogue → quelle drogue).</p>
+      <button class="btn btn-primary mt16" onclick="creerAction()">Créer l'action</button>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h2>Actions disponibles</h2></div>
+      <table><thead><tr><th>Nom</th><th>$ sale/u</th><th>$ propre/u</th><th>Stock</th><th></th></tr></thead>
+        <tbody>${actions.length ? actions.map(a => {
+          const catVar = a.cat_variable ? cats.find(c => c.id === a.cat_variable) : null;
+          const recetteTxt = (a.recipe || []).map(r => {
+            const cat = cats.find(c => c.id === r.catId);
+            const prod = cat && cat.produits ? cat.produits[r.prodId] : null;
+            return prod ? `${prod.nom} x${r.qty}` : "—";
+          }).join(", ");
+          return `<tr><td>${a.nom}</td><td>${formatMoney(a.montant_sale || 0)}</td><td>${formatMoney(a.montant_propre || 0)}</td>
+          <td class="small">${catVar ? `Produit choisi (${catVar.emoji || ""} ${catVar.nom})` : (recetteTxt || "—")}</td>
+          <td><span class="btn btn-sm btn-danger" onclick="suppAction('${a.id}')">Suppr.</span></td></tr>`;
+        }).join("") : '<tr class="empty-row"><td colspan="5">Aucune action définie</td></tr>'}</tbody></table>
+    </div>
+  `;
+}
+
+async function importerActionsClassiques() {
+  if (!confirm("Importer les actions classiques (catégories de stock + 5 actions) ? Les éléments déjà existants avec le même nom ne seront pas dupliqués si tu annules après vérification.")) return;
+
+  const cats = {
+    drogue_cat: { nom: "Drogue", emoji: "💊", produits: {
+      meth: { nom: "Meth", prix: 100, stock: 0, seuil: 5 },
+      coke: { nom: "Coke", prix: 150, stock: 0, seuil: 5 },
+      weed: { nom: "Weed", prix: 80, stock: 0, seuil: 5 }
+    }},
+    materiel_cat: { nom: "Matériel", emoji: "🛠️", produits: {
+      boitier: { nom: "Boîtier de piratage", prix: 0, stock: 0, seuil: 2 },
+      crochetage: { nom: "Outil de crochetage", prix: 0, stock: 0, seuil: 2 }
+    }},
+    plantation_cat: { nom: "Plantation", emoji: "🌱", produits: {
+      eau: { nom: "Eau", prix: 0, stock: 0, seuil: 5 },
+      fertilisant: { nom: "Fertilisant", prix: 0, stock: 0, seuil: 5 },
+      graine: { nom: "Graine", prix: 0, stock: 0, seuil: 5 },
+      pot: { nom: "Pot", prix: 0, stock: 0, seuil: 5 }
+    }},
+    branches_cat: { nom: "Branches", emoji: "🌿", produits: {
+      branche: { nom: "Branche de cannabis", prix: 0, stock: 0, seuil: 5 }
+    }}
+  };
+  for (const [catId, cat] of Object.entries(cats)) {
+    await db.ref("stock/" + catId).update(cat);
+  }
+
+  await db.ref("actions_dispo").update({
+    vente_drogue: { nom: "Vente de Drogue", montant_sale: 0, montant_propre: 0, recipe: [], cat_variable: "drogue_cat" },
+    atm: { nom: "ATM", montant_sale: 0, montant_propre: 0, recipe: [{ catId: "materiel_cat", prodId: "boitier", qty: 1 }] },
+    cambu: { nom: "Cambu", montant_sale: 0, montant_propre: 0, recipe: [{ catId: "materiel_cat", prodId: "crochetage", qty: 1 }] },
+    plantation: { nom: "Plantation", montant_sale: 0, montant_propre: 0, recipe: [
+      { catId: "plantation_cat", prodId: "eau", qty: 1 }, { catId: "plantation_cat", prodId: "fertilisant", qty: 1 },
+      { catId: "plantation_cat", prodId: "graine", qty: 1 }, { catId: "plantation_cat", prodId: "pot", qty: 1 }
+    ]},
+    vente_branches: { nom: "Vente de Branches", montant_sale: 0, montant_propre: 0, recipe: [{ catId: "branches_cat", prodId: "branche", qty: 1 }] }
+  });
+
+  toast("Actions importées — ajuste les prix/stocks dans Admin → Stock.");
+  loadTab("actions");
+}
+let RECIPE_LINES = [];
+function addRecipeLine() {
+  const val = document.getElementById("recipeProd").value;
+  const qty = Number(document.getElementById("recipeQty").value) || 0;
+  if (!val || qty <= 0) { toast("Sélectionne un produit et une quantité.", true); return; }
+  const [catId, prodId] = val.split("::");
+  RECIPE_LINES.push({ catId, prodId, qty });
+  document.getElementById("recipeLines").textContent = "Recette : " + RECIPE_LINES.length + " ligne(s) ajoutée(s) — sera enregistrée à la création.";
+}
+async function creerAction() {
+  const nom = document.getElementById("aNom").value.trim();
+  if (!nom) { toast("Nom requis.", true); return; }
+  await db.ref("actions_dispo/" + uid()).set({
+    nom, montant_sale: Number(document.getElementById("aSale").value) || 0,
+    montant_propre: Number(document.getElementById("aPropre").value) || 0,
+    recipe: RECIPE_LINES,
+    cat_variable: document.getElementById("aCatVariable").value || null
+  });
+  RECIPE_LINES = [];
+  toast("Action créée.");
+  loadTab("actions");
+}
+async function suppAction(id) { if (confirm("Supprimer cette action ?")) { await db.ref("actions_dispo/" + id).remove(); loadTab("actions"); } }
+
+/* ===================== QUOTAS ===================== */
+async function getActiveWeekAdmin() {
+  const snap = await db.ref("semaines").once("value");
+  const list = entries(snap.val()).map(([id, s]) => ({ id, ...s }));
+  list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  return list.find(s => s.bloquee !== true) || list[0] || null;
+}
+function barreAdmin(pct) {
+  return `<div style="background:var(--bg-2); border-radius:6px; height:8px; overflow:hidden; min-width:90px;">
+    <div style="height:100%; width:${Math.min(100, pct)}%; background:${pct >= 100 ? 'var(--success)' : 'var(--steel)'};"></div></div>`;
+}
+async function tabQuotas(body) {
+  const week = await getActiveWeekAdmin();
+  const [snapM, snapAc, snapAcDispo, snapS, snapQC, snapG] = await Promise.all([
+    db.ref("membres").once("value"),
+    week ? db.ref("actions/" + week.id).once("value") : Promise.resolve({ val: () => null }),
+    db.ref("actions_dispo").once("value"),
+    db.ref("stock").once("value"),
+    db.ref("quotas_categorie").once("value"),
+    db.ref("visibilite_grades").once("value")
+  ]);
+  const visi = snapG.val() || {};
+  const gradesMasques = new Set(Object.keys(visi).filter(g => visi[g] && visi[g].quotas === false));
+  const membres = entries(snapM.val()).map(([id, m]) => ({ id, ...m })).filter(m => m.actif !== false && !gradesMasques.has(m.grade));
+  const actions = entries(snapAc.val()).map(([id, a]) => a);
+  const actionsDispo = snapAcDispo.val() || {};
+  const stock = snapS.val() || {};
+  const quotasCategorie = snapQC.val() || {};
+
+  body.innerHTML = `
+    <div class="panel">
+      <div class="panel-head"><h2>Quota global (nb d'actions / semaine)</h2></div>
+      <table><thead><tr><th>Membre</th><th>Quota</th><th>Réalisé</th><th>Progression</th></tr></thead>
+        <tbody>${membres.length ? membres.map(m => {
+          const fait = actions.filter(a => a.membre_id === m.id && a.resultat === "Réussite" && !a.produit_drogue_id).reduce((acc, a) => acc + Number(a.quantite || 0), 0);
+          const quota = Number(m.quota) || 0;
+          const pct = quota > 0 ? Math.round(fait / quota * 100) : 0;
+          return `<tr><td>${m.prenom} ${m.nom || ""}</td>
+            <td><input type="number" value="${quota}" style="max-width:90px" onchange="majQuotaAdmin('${m.id}', this.value)"></td>
+            <td>${fait}</td><td>${barreAdmin(pct)}</td></tr>`;
+        }).join("") : '<tr class="empty-row"><td colspan="4">Aucun membre</td></tr>'}</tbody></table>
+    </div>
+    <div id="quotasProduitsAdminWrap"></div>
+  `;
+
+  // une seule cible par catégorie "produit variable" (ex: Drogue), peu importe le produit exact vendu
+  const catIds = [...new Set(Object.values(actionsDispo).map(a => a.cat_variable).filter(Boolean))];
+  const wrap = document.getElementById("quotasProduitsAdminWrap");
+  if (!catIds.length) {
+    wrap.innerHTML = '<div class="panel"><p class="muted small">Aucune action avec produit variable (ex: Vente de Drogue) n\'est configurée dans l\'onglet Actions.</p></div>';
+    return;
+  }
+  wrap.innerHTML = catIds.map(catId => {
+    const cat = stock[catId];
+    if (!cat) return "";
+    const produitIds = new Set(Object.keys(cat.produits || {}));
+    return `<div class="panel">
+      <div class="panel-head"><h2>${cat.emoji || ""} Quota global ${cat.nom} (toutes confondues)</h2></div>
+      <table><thead><tr><th>Membre</th><th>Quota</th><th>Réalisé</th><th>Progression</th></tr></thead>
+        <tbody>${membres.map(m => {
+          const quota = Number((quotasCategorie[m.id] || {})[catId]) || 0;
+          const fait = actions.filter(a => a.membre_id === m.id && produitIds.has(a.produit_drogue_id) && a.resultat === "Réussite")
+            .reduce((acc, a) => acc + Number(a.quantite || 0), 0);
+          const pct = quota > 0 ? Math.round(fait / quota * 100) : 0;
+          return `<tr><td>${m.prenom}</td>
+            <td><input type="number" value="${quota}" style="max-width:90px" onchange="majQuotaCategorieAdmin('${m.id}','${catId}', this.value)"></td>
+            <td>${fait}</td><td>${barreAdmin(pct)}</td></tr>`;
+        }).join("")}</tbody></table>
+    </div>`;
+  }).join("");
+}
+async function majQuotaAdmin(id, val) {
+  await db.ref("membres/" + id + "/quota").set(Number(val) || 0);
+  toast("Quota mis à jour.");
+}
+async function majQuotaCategorieAdmin(membreId, catId, val) {
+  await db.ref(`quotas_categorie/${membreId}/${catId}`).set(Number(val) || 0);
+  toast("Quota mis à jour.");
+}
+
+/* ===================== GRADES ===================== */
+async function tabGrades(body) {
+  const snap = await db.ref("grades").once("value");
+  const grades = entries(snap.val()).map(([id, g]) => ({ id, ...g })).sort((a, b) => (a.ordre || 99) - (b.ordre || 99));
+  body.innerHTML = `
+    <div class="panel">
+      <div class="panel-head"><h2>Nouveau grade</h2></div>
+      <div class="row"><input type="text" id="gNom" placeholder="Nom du grade">
+      <input type="number" id="gOrdre" placeholder="Ordre hiérarchique (1 = le plus haut)">
+      <button class="btn btn-primary" onclick="creerGrade()">Créer</button></div>
+      <p class="small muted mt8">La visibilité de chaque grade dans Quotas / Stats / Paye / Tracker / Labo se configure dans l'onglet "Visibilité".</p>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h2>Grades</h2></div>
+      <table><thead><tr><th>Ordre</th><th>Nom</th><th></th></tr></thead>
+        <tbody>${grades.length ? grades.map(g => `
+          <tr><td>${g.ordre || "-"}</td><td>${g.nom}</td>
+          <td>${g.nom === 'Fondateur' ? '<span class="small muted">protégé</span>' : `<span class="btn btn-sm btn-danger" onclick="suppGrade('${g.id}')">Suppr.</span>`}</td></tr>
+        `).join("") : '<tr class="empty-row"><td colspan="3">Aucun grade</td></tr>'}</tbody></table>
+    </div>
+  `;
+}
+async function creerGrade() {
+  const nom = document.getElementById("gNom").value.trim();
+  if (!nom) { toast("Nom requis.", true); return; }
+  await db.ref("grades/" + uid()).set({ nom, ordre: Number(document.getElementById("gOrdre").value) || 9 });
+  toast("Grade créé.");
+  loadTab("grades");
+}
+async function suppGrade(id) { if (confirm("Supprimer ce grade ?")) { await db.ref("grades/" + id).remove(); loadTab("grades"); } }
+
+/* ===================== VISIBILITÉ (grade × page de suivi) ===================== */
+const VISIBILITE_PAGES = [
+  { page: "quotas",  label: "Quotas" },
+  { page: "stats",   label: "Stats" },
+  { page: "paye",    label: "Paye" },
+  { page: "tracker", label: "Tracker" },
+  { page: "labo",    label: "Labo" }
+];
+async function tabVisibilite(body) {
+  const [snapG, snapV] = await Promise.all([db.ref("grades").once("value"), db.ref("visibilite_grades").once("value")]);
+  const grades = entries(snapG.val()).map(([id, g]) => g.nom);
+  const visi = snapV.val() || {};
+  body.innerHTML = `
+    <div class="panel">
+      <div class="panel-head"><h2>Visibilité par grade</h2></div>
+      <p class="small muted">Coche les pages où les membres de ce grade doivent apparaître (membre listé, comptabilisé). Décoche pour un grade invité qui n'a pas besoin d'être suivi sur cette page. Tout est coché par défaut.</p>
+      <table>
+        <thead><tr><th>Grade</th>${VISIBILITE_PAGES.map(p => `<th>${p.label}</th>`).join("")}</tr></thead>
+        <tbody>
+          ${grades.map(g => `<tr><td>${g}</td>${VISIBILITE_PAGES.map(p =>
+            `<td style="text-align:center;"><input type="checkbox" id="visi_${g}_${p.page}" ${(!visi[g] || visi[g][p.page] !== false) ? "checked" : ""}></td>`
+          ).join("")}</tr>`).join("")}
+        </tbody>
+      </table>
+      ${grades.length === 0 ? '<p class="muted mt16">Crée d\'abord des grades dans l\'onglet Grades.</p>' :
+      '<button class="btn btn-primary mt16" onclick="enregistrerVisibilite()">Enregistrer la visibilité</button>'}
+    </div>
+  `;
+  window._visiGrades = grades;
+}
+async function enregistrerVisibilite() {
+  const grades = window._visiGrades || [];
+  const update = {};
+  grades.forEach(g => { update[g] = {}; VISIBILITE_PAGES.forEach(p => { update[g][p.page] = document.getElementById(`visi_${g}_${p.page}`).checked; }); });
+  await db.ref("visibilite_grades").update(update);
+  toast("Visibilité enregistrée.");
+}
+
+/* ===================== PERMISSIONS ===================== */
+async function tabPermissions(body) {
+  const [snapG, snapP] = await Promise.all([db.ref("grades").once("value"), db.ref("permissions").once("value")]);
+  const grades = entries(snapG.val()).map(([id, g]) => g.nom).filter(n => n !== "Fondateur");
+  const perms = snapP.val() || {};
+  body.innerHTML = `
+    <div class="panel">
+      <div class="panel-head"><h2>Permissions par grade</h2></div>
+      <p class="small muted">Le Fondateur a toujours accès à tout. Coche les pages accessibles pour chaque autre grade, puis enregistre.</p>
+      <table>
+        <thead><tr><th>Page</th>${grades.map(g => `<th>${g}</th>`).join("")}</tr></thead>
+        <tbody>
+          ${PAGES_DISPO.map(p => `<tr><td>${p.label}</td>${grades.map(g =>
+            `<td style="text-align:center;"><input type="checkbox" id="perm_${g}_${p.page}" ${(perms[g] && perms[g][p.page]) ? "checked" : ""}></td>`
+          ).join("")}</tr>`).join("")}
+        </tbody>
+      </table>
+      ${grades.length === 0 ? '<p class="muted mt16">Crée d\'abord des grades dans l\'onglet Grades.</p>' :
+      '<button class="btn btn-primary mt16" onclick="enregistrerPermissions()">Enregistrer les permissions</button>'}
+    </div>
+  `;
+  window._permGrades = grades;
+}
+async function enregistrerPermissions() {
+  const grades = window._permGrades || [];
+  const update = {};
+  grades.forEach(g => { update[g] = {}; PAGES_DISPO.forEach(p => { update[g][p.page] = document.getElementById(`perm_${g}_${p.page}`).checked; }); });
+  await db.ref("permissions").update(update);
+  _permsCache = null;
+  toast("Permissions enregistrées.");
+}
+
+/* ===================== CONFIG ===================== */
+async function tabConfig(body) {
+  const [snapCfg, snapEv, snapG] = await Promise.all([db.ref("config").once("value"), db.ref("events_drogue").once("value"), db.ref("grades").once("value")]);
+  const cfg = snapCfg.val() || {};
+  const events = entries(snapEv.val()).map(([id, e]) => ({ id, ...e })).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  const grades = entries(snapG.val()).map(([id, g]) => g.nom).sort();
+  const tauxGrades = cfg.taux_paye_grades || {};
+  body.innerHTML = `
+    <div class="panel">
+      <div class="panel-head"><h2>Paramètres généraux</h2></div>
+      <div class="row">
+        <div><label class="l">Taux de frais blanchiment (%)</label><input type="number" id="cfgTaux" value="${cfg.blanchiment_taux ?? 35}"></div>
+        <div><label class="l">Webhook Discord — résumé de semaine (optionnel)</label><input type="text" id="cfgWebhook" value="${cfg.discord_webhook_semaine || ''}" placeholder="https://discord.com/api/webhooks/..."></div>
+      </div>
+      <div class="row mt8">
+        <div><label class="l">Taux de paye par défaut — Vente de Drogue (%)</label><input type="number" id="cfgTauxPayeDrogue" value="${cfg.taux_paye_drogue ?? 20}"></div>
+        <div><label class="l">Taux de paye par défaut — Autres actions (%)</label><input type="number" id="cfgTauxPayeAutres" value="${cfg.taux_paye_autres ?? 45}"></div>
+      </div>
+      <button class="btn btn-primary mt16" onclick="saveConfig()">Enregistrer</button>
+    </div>
+
+    <div class="panel mt16">
+      <div class="panel-head"><h2>Taux de paye par rôle (grade)</h2></div>
+      <p class="small muted">Laisse vide pour utiliser le taux par défaut ci-dessus.</p>
+      <table><thead><tr><th>Grade</th><th>Drogue (%)</th><th>Autres actions (%)</th></tr></thead>
+        <tbody>${grades.length ? grades.map(g => `
+          <tr><td>${g}</td>
+            <td><input type="number" id="cfgGradeDrogue_${g}" value="${tauxGrades[g] && tauxGrades[g].drogue != null ? tauxGrades[g].drogue : ''}" style="max-width:100px" placeholder="${cfg.taux_paye_drogue ?? 20}"></td>
+            <td><input type="number" id="cfgGradeAutres_${g}" value="${tauxGrades[g] && tauxGrades[g].autres != null ? tauxGrades[g].autres : ''}" style="max-width:100px" placeholder="${cfg.taux_paye_autres ?? 45}"></td>
+          </tr>`).join("") : '<tr class="empty-row"><td colspan="3">Aucun grade — crée-en dans l\'onglet Grades</td></tr>'}</tbody>
+      </table>
+      ${grades.length ? '<button class="btn btn-primary mt16" onclick="saveTauxGrades()">Enregistrer les taux par grade</button>' : ''}
+    </div>
+    <div id="_gradesListForConfig" style="display:none;">${grades.join("||")}</div>
+
+    <div class="panel mt16">
+      <div class="panel-head"><h2>🎯 Events — Taux spéciaux</h2></div>
+      <p class="small muted">Pendant la fenêtre définie, les taux de paye sont remplacés. Laisse à 0 pour ne pas modifier un taux.</p>
+      <div class="row mt8">
+        <div><label class="l">Début</label><input type="datetime-local" id="evDebut"></div>
+        <div><label class="l">Fin</label><input type="datetime-local" id="evFin"></div>
+        <div><label class="l">Taux drogue (%)</label><input type="number" id="evTauxDrogue" value="35" style="max-width:100px;"></div>
+        <div><label class="l">Taux actions (%)</label><input type="number" id="evTauxActions" value="0" style="max-width:100px;"></div>
+        <div><label class="l">Nom (optionnel)</label><input type="text" id="evNom" placeholder="Ex: Event nuit"></div>
+        <div style="display:flex;align-items:flex-end;"><button class="btn btn-gold" onclick="creerEvent()">Créer</button></div>
+      </div>
+      <table class="mt16"><thead><tr><th>Nom</th><th>Début</th><th>Fin</th><th>Taux drogue</th><th>Taux actions</th><th></th></tr></thead>
+        <tbody>${events.length ? events.map(e => `
+          <tr><td>${e.nom || "—"}</td><td>${new Date(e.debut).toLocaleString("fr-FR")}</td><td>${new Date(e.fin).toLocaleString("fr-FR")}</td>
+          <td>${e.taux || 0}%</td><td>${e.taux_actions || 0}%</td>
+          <td><span class="btn btn-sm btn-danger" onclick="supprimerEvent('${e.id}')">Suppr.</span></td></tr>
+        `).join("") : '<tr class="empty-row"><td colspan="6">Aucun event</td></tr>'}</tbody>
+      </table>
+    </div>
+  `;
+}
+async function saveTauxGrades() {
+  const grades = document.getElementById("_gradesListForConfig").textContent.split("||").filter(Boolean);
+  const update = {};
+  grades.forEach(g => {
+    const d = document.getElementById("cfgGradeDrogue_" + g).value;
+    const a = document.getElementById("cfgGradeAutres_" + g).value;
+    update[g] = {};
+    if (d !== "") update[g].drogue = Number(d);
+    if (a !== "") update[g].autres = Number(a);
+  });
+  await db.ref("config/taux_paye_grades").set(update);
+  toast("Taux par grade enregistrés.");
+}
+async function creerEvent() {
+  const debut = document.getElementById("evDebut").value;
+  const fin = document.getElementById("evFin").value;
+  const taux = Number(document.getElementById("evTauxDrogue").value) || 0;
+  const taux_actions = Number(document.getElementById("evTauxActions").value) || 0;
+  const nom = document.getElementById("evNom").value.trim();
+  if (!debut || !fin) { toast("Remplis début et fin.", true); return; }
+  if (new Date(fin) <= new Date(debut)) { toast("La fin doit être après le début.", true); return; }
+  await db.ref("events_drogue/" + uid()).set({ debut: new Date(debut).getTime(), fin: new Date(fin).getTime(), taux, taux_actions, nom, createdAt: Date.now() });
+  toast("Event créé.");
+  loadTab("config");
+}
+async function supprimerEvent(id) {
+  await db.ref("events_drogue/" + id).remove();
+  loadTab("config");
+}
+async function saveConfig() {
+  await db.ref("config").update({
+    blanchiment_taux: Number(document.getElementById("cfgTaux").value) || 35,
+    taux_paye_drogue: Number(document.getElementById("cfgTauxPayeDrogue").value) || 0,
+    taux_paye_autres: Number(document.getElementById("cfgTauxPayeAutres").value) || 0,
+    discord_webhook_semaine: document.getElementById("cfgWebhook").value.trim()
+  });
+  toast("Configuration enregistrée.");
+}
+
+(async function () {
+  await authReady;
+  SESSION = await initShell("admin", "Admin");
+  if (!SESSION) return;
+  renderContent();
+})();
+</script>
+</body>
+</html>

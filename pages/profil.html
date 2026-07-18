@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Profil — Kronen Krieg</title>
+<link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+<div id="shell"></div>
+
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+<script src="../js/firebase-config.js"></script>
+<script src="../js/app.js"></script>
+<script>
+let SESSION;
+
+function renderContent() {
+  document.getElementById("content").innerHTML = `
+    <h1>Profil</h1>
+    <div class="sigil-rule"></div>
+
+    <div class="grid cols-2 mt16">
+      <div class="panel">
+        <div class="panel-head"><h2>Mes informations</h2></div>
+        <p><b style="color:var(--steel)">${SESSION.prenom} ${SESSION.nom || ""}</b></p>
+        <p class="muted small">Grade : ${SESSION.grade || "-"}</p>
+        <p class="muted small">Rôle : ${SESSION.role === 'admin' ? 'Administrateur' : 'Membre'}</p>
+
+        <div class="fieldset mt24">
+          <label class="l">Nouveau mot de passe</label>
+          <input type="password" id="newPass" placeholder="••••••••">
+          <button class="btn btn-primary mt16" onclick="changerPass()">Changer le mot de passe</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><h2>Mes stats — semaine active</h2></div>
+        <div class="grid cols-2">
+          <div><div class="stat-num" id="mesActions">0</div><div class="stat-sub">actions</div></div>
+          <div><div class="stat-num gold" id="mesGains">0 $</div><div class="stat-sub">gains générés</div></div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+async function changerPass() {
+  const val = document.getElementById("newPass").value.trim();
+  if (val.length < 4) { toast("Mot de passe trop court.", true); return; }
+  await db.ref("membres/" + SESSION.id + "/mot_de_passe").set(val);
+  toast("Mot de passe mis à jour.");
+  document.getElementById("newPass").value = "";
+}
+
+async function getActiveWeek() {
+  const snap = await db.ref("semaines").once("value");
+  const list = entries(snap.val()).map(([id, s]) => ({ id, ...s }));
+  list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  return list.find(s => s.bloquee !== true) || list[0] || null;
+}
+
+async function chargerMesStats() {
+  const week = await getActiveWeek();
+  if (!week) return;
+  const snap = await db.ref("actions/" + week.id).once("value");
+  const actions = entries(snap.val()).map(([id, a]) => a).filter(a => a.membre_id === SESSION.id);
+  document.getElementById("mesActions").textContent = actions.length;
+  document.getElementById("mesGains").textContent = formatMoney(actions.reduce((acc, a) => acc + Number(a.gains_totaux || 0), 0));
+}
+
+(async function () {
+  await authReady;
+  SESSION = await initShell("profil", "Profil");
+  if (!SESSION) return;
+  renderContent();
+  await chargerMesStats();
+})();
+</script>
+</body>
+</html>
