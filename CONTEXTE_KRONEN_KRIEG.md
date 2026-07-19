@@ -46,6 +46,8 @@ const FIREBASE_CONFIG = {
 2. **Logo / fond** : `img/logo.png` et `img/background.png` = même image (flag allemand + texte "FA / FlashBack FA" fournie par l'utilisateur — à changer si un vrai logo Kronen Krieg est fourni plus tard).
 3. **setup.html généralisé** : ne crée plus un membre fixe "Tony Diaz" — formulaire Prénom/Nom/Grade/Mot de passe, id membre = `prenom_nom` slugifié, protection admin dans `admin.html` basée sur `role === 'admin'` (plus sur un id fixe).
 4. **Système de semaines automatique** (nouveau, absent de Volta) — voir section dédiée ci-dessous.
+5. **Transactions** : champ "Groupe" rendu optionnel (plus de blocage si vide, affiche "-" dans le tableau et dans la description de la transaction).
+6. **Paye** : type d'argent par défaut sur **Propre** (au lieu de Sale) — montant suggéré/affiché déjà réduit du taux de blanchiment.
 
 ## STRUCTURE DU SITE
 kronen-krieg-site/
@@ -112,7 +114,7 @@ Fonctions dans `js/app.js`, appelées via `ensureSemaineAuto()` à chaque `initS
 - Page Stock connectée à labo_stock_commun
 
 ## PAYE
-- Sale par défaut. Propre → -blanchiment_taux% auto
+- **Propre par défaut** (select pré-sélectionné sur "Propre", montant affiché déjà réduit de -blanchiment_taux%). Sale reste sélectionnable manuellement.
 - Montant calculé (lecture seule), paiement à 0 autorisé
 - Events : taux drogue et/ou actions appliqués par action selon createdAt
 - Fleeca : gains divisés entre participants

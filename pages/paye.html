@@ -118,7 +118,7 @@ async function chargerPaye() {
     const payeActions = mesActions.filter(a => !(actionsDispo[a.action_id] && actionsDispo[a.action_id].cat_variable))
       .reduce((acc, a) => acc + Math.round(partGains(m.id, a) * tauxActionsForAction(a) / 100), 0);
     const suggestion = payeDrogue + payeActions;
-    const montant = dejaPaye ? Number(dejaPaye.montant) || 0 : suggestion;
+    const montant = dejaPaye ? Number(dejaPaye.montant) || 0 : Math.round(suggestion * (1 - TAUX_BLANCHIMENT / 100));
     if (dejaPaye) totalPaye += Number(dejaPaye.montant) || 0;
 
     return `<tr>
@@ -127,8 +127,8 @@ async function chargerPaye() {
       <td>${formatMoney(gainsAction)}</td>
       <td class="mono">${formatMoney(totalGenere)}</td>
       <td id="montantCell_${m.id}">${formatMoney(montant)}</td>
-      <td>${isAdmin && !dejaPaye ? `<select id="typeArgent_${m.id}" onchange="onArgentChange('${m.id}', ${montant})"><option value="sale" selected>Sale</option><option value="propre">Propre (-${TAUX_BLANCHIMENT}%)</option></select>` : "-"}</td>
-      <td>${dejaPaye ? '<span class="badge badge-ok">Payé</span>' : (isAdmin ? `<span class="btn btn-sm btn-gold" onclick="payer('${m.id}','${m.prenom}',${montant})">Payer</span>` : '<span class="badge badge-warn">En attente</span>')}</td>
+      <td>${isAdmin && !dejaPaye ? `<select id="typeArgent_${m.id}" onchange="onArgentChange('${m.id}', ${suggestion})"><option value="sale">Sale</option><option value="propre" selected>Propre (-${TAUX_BLANCHIMENT}%)</option></select>` : "-"}</td>
+      <td>${dejaPaye ? '<span class="badge badge-ok">Payé</span>' : (isAdmin ? `<span class="btn btn-sm btn-gold" onclick="payer('${m.id}','${m.prenom}',${suggestion})">Payer</span>` : '<span class="badge badge-warn">En attente</span>')}</td>
     </tr>`;
   }).join("") : '<tr class="empty-row"><td colspan="7">Aucun membre</td></tr>';
 

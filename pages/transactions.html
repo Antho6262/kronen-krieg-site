@@ -82,7 +82,7 @@ async function ajouterTransaction() {
   const prix = Number(document.getElementById("tPrix").value) || 0;
   const typeArgent = document.getElementById("tTypeArgent").value;
   const groupe = document.getElementById("tGroupe").value.trim();
-  if (!groupe || qte <= 0) { toast("Complétez le formulaire.", true); return; }
+  if (qte <= 0) { toast("Complétez le formulaire.", true); return; }
   const total = qte * prix;
   const prodNom = STOCK[catId].produits[pid].nom;
   const id = uid();
@@ -104,7 +104,7 @@ async function ajouterTransaction() {
 
   await db.ref(`argent/${typeArgent}/${id}`).set({
     date: document.getElementById("tDate").value || todayISO(),
-    description: (type === "achat" ? "Achat" : "Vente") + " — " + prodNom + " x" + qte + " (" + groupe + ")",
+    description: (type === "achat" ? "Achat" : "Vente") + " — " + prodNom + " x" + qte + (groupe ? " (" + groupe + ")" : ""),
     type: type === "achat" ? "Sortie" : "Entrée", montant: total, responsable: SESSION.prenom, createdAt: Date.now()
   });
 
@@ -118,7 +118,7 @@ async function chargerTransactions() {
   const list = entries(snap.val()).map(([id, t]) => ({ id, ...t })).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
   const canDelete = SESSION.role === "admin";
   document.getElementById("tblTransactions").innerHTML = list.length ? list.map(t => `
-    <tr><td>${t.date}</td><td>${t.prenom_membre || "-"}</td><td><span class="badge ${t.type === 'achat' ? 'badge-warn' : 'badge-ok'}">${t.type}</span></td><td>${t.groupe}</td>
+    <tr><td>${t.date}</td><td>${t.prenom_membre || "-"}</td><td><span class="badge ${t.type === 'achat' ? 'badge-warn' : 'badge-ok'}">${t.type}</span></td><td>${t.groupe || "-"}</td>
     <td>${t.produit_nom}</td><td>${t.quantite}</td><td>${formatMoney(t.quantite * t.prix)}</td><td>${t.type_argent}</td>
     <td>${canDelete ? `<span class="btn btn-sm btn-danger" onclick="supprimerTransaction('${t.id}')">Suppr.</span>` : ""}</td></tr>
   `).join("") : '<tr class="empty-row"><td colspan="8">Aucune transaction</td></tr>';
