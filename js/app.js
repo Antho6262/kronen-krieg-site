@@ -50,8 +50,41 @@ function fmtJJMM(ts) {
 function nomAutoSemaine(debut, fin) {
   return "Semaine du " + fmtJJMM(debut) + " au " + fmtJJMM(fin);
 }
-/* Verrouille une semaine (résumé + webhook Discord si configuré).
-   Protégé par transaction : un seul client exécute réellement le verrouillage. */
+/* Bornes de la prochaine semaine, enchaînée juste après la fin de la
+   précédente (7 jours pile, verrouillage à 19h00 le 7e jour). S'il n'y a
+   pas de semaine précédente, on part de la semaine calendaire courante
+   (lundi → dimanche) — utilisé uniquement pour la toute première semaine. */
+function prochainesBornes(derniere) {
+  if (!derniere || !derniere.fin) return limitesSemaine(Date.now());
+  const debutDate = new Date(derniere.fin + 1);
+  debutDate.setHours(0, 0, 0, 0);
+  const debut = debutDate.getTime();
+  const finDate = new Date(debut);
+  finDate.setDate(finDate.getDate() + 6);
+  finDate.setHours(23, 59, 59, 999);
+  const verrouDate = new Date(debut);
+  verrouDate.setDate(verrouDate.getDate() + 6);
+  verrouDate.setHours(19, 0, 0, 0);
+  return { debut, fin: finDate.getTime(), verrouAt: verrouDate.getTime() };
+}
+/* Crée la semaine suivante enchaînée après `derniere`. Protégé par
+   transaction sur semaine_index : un seul client la crée réellement. */
+async function creerSemaineSuivante(derniere) {
+  const bounds = prochainesBornes(derniere);
+  const idxRef = db.ref("semaine_index/" + bounds.debut);
+  const res = await idxRef.transaction(cur => (cur === null ? true : undefined));
+  if (!res.committed) return;
+  const id = uid();
+  const nom = nomAutoSemaine(bounds.debut, bounds.fin);
+  await db.ref("semaines/" + id).set({
+    nom, bloquee: false, createdAt: Date.now(),
+    debut: bounds.debut, fin: bounds.fin, verrouAt: bounds.verrouAt, auto: true
+  });
+  await idxRef.set(id);
+}
+/* Verrouille une semaine (résumé + webhook Discord si configuré) et
+   enchaîne automatiquement la semaine suivante. Protégé par transaction :
+   un seul client exécute réellement le verrouillage. */
 async function verrouillerSemaineAuto(id, nom) {
   const res = await db.ref("semaines/" + id + "/bloquee").transaction(cur => (cur === true ? undefined : true));
   if (!res.committed) return;
@@ -82,36 +115,28 @@ async function verrouillerSemaineAuto(id, nom) {
       catch (e) { /* webhook injoignable, on ignore */ }
     }
   } catch (e) { console.error("verrouillerSemaineAuto", e); }
+
+  const semSnap = await db.ref("semaines/" + id).once("value");
+  await creerSemaineSuivante({ id, ...semSnap.val() });
 }
 /* Vérifie la semaine active à chaque chargement de page :
-   - verrouille l'ancienne si l'heure de verrouillage est dépassée
-   - crée la semaine courante si elle n'existe pas encore */
+   - verrouille l'ancienne si l'heure de verrouillage est dépassée (ce qui
+     enchaîne automatiquement la suivante, voir verrouillerSemaineAuto)
+   - crée une première semaine si aucune n'existe encore */
 async function ensureSemaineAuto() {
   try {
     const now = Date.now();
     const snap = await db.ref("semaines").once("value");
     const list = entries(snap.val()).map(([id, s]) => ({ id, ...s }));
-    list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    list.sort((a, b) => (b.debut || b.createdAt || 0) - (a.debut || a.createdAt || 0));
     const active = list.find(s => s.bloquee !== true);
 
     if (active && active.verrouAt && now >= active.verrouAt) {
       await verrouillerSemaineAuto(active.id, active.nom);
+      return;
     }
-
-    const bounds = limitesSemaine(now);
-    const existeDeja = list.some(s => s.debut === bounds.debut);
-    if (!existeDeja) {
-      const idxRef = db.ref("semaine_index/" + bounds.debut);
-      const res = await idxRef.transaction(cur => (cur === null ? true : undefined));
-      if (res.committed) {
-        const id = uid();
-        const nom = nomAutoSemaine(bounds.debut, bounds.fin);
-        await db.ref("semaines/" + id).set({
-          nom, bloquee: false, createdAt: now,
-          debut: bounds.debut, fin: bounds.fin, verrouAt: bounds.verrouAt, auto: true
-        });
-        await idxRef.set(id);
-      }
+    if (!list.length) {
+      await creerSemaineSuivante(null);
     }
   } catch (e) { console.error("ensureSemaineAuto", e); }
 }

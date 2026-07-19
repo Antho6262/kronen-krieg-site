@@ -89,13 +89,15 @@ Pages absentes/non liées : objectifs, sanctions, armurerie, logs, tv, consommat
 
 ## SYSTÈME DE SEMAINES AUTOMATIQUE (nouveau vs Volta)
 Fonctions dans `js/app.js`, appelées via `ensureSemaineAuto()` à chaque `initShell()` (donc à chaque chargement de page protégée) :
-- **Semaine** = lundi 00:00 → dimanche 23:59:59 (heure du navigateur)
+- **Semaines enchaînées** (pas calendaires) : chaque nouvelle semaine démarre juste après la fin de la précédente (`prochainesBornes(derniere)` = `derniere.fin + 1` → +6 jours 23:59:59, `verrouAt` = +6 jours 19:00:00). La toute première semaine (aucune semaine existante) démarre sur la semaine calendaire courante (`limitesSemaine`, lundi→dimanche) — via `setup.html` ou `ensureSemaineAuto` si la base est vide.
 - **Nom auto** : `Semaine du JJ/MM au JJ/MM`
-- **Verrouillage auto** : dès qu'un membre charge une page après dimanche 19h00, la semaine active est verrouillée automatiquement (`verrouillerSemaineAuto`), un résumé est généré et stocké dans `semaines/{id}/resume`, envoyé au webhook Discord (`config/discord_webhook_semaine`) si configuré
-- **Création auto** : si aucune semaine n'existe pour la période courante, elle est créée automatiquement
-- **Anti-doublon** : verrouillage via `transaction()` sur `semaines/{id}/bloquee` (un seul client exécute le lock) et sur `semaine_index/{debut}` (un seul client crée la semaine) — robuste si plusieurs membres connectés en même temps
-- **Admin → Semaines** : la création manuelle (`creerSemaine()` dans admin.html) calcule aussi les bornes de la semaine en cours pour s'intégrer au système auto (évite les doublons). Tableau des semaines affiche désormais la colonne "Verrouillage auto"
-- Pas de vrai cron côté serveur (site statique) : le déclenchement dépend qu'un membre ouvre une page après l'heure de verrouillage. Si personne ne se connecte le dimanche soir, le verrouillage se fait au premier chargement suivant.
+- **Verrouillage auto** : dès qu'un membre charge une page après l'heure `verrouAt`, la semaine active est verrouillée (`verrouillerSemaineAuto`), un résumé est généré (`semaines/{id}/resume`), envoyé au webhook Discord si configuré, **puis la semaine suivante est créée automatiquement** (`creerSemaineSuivante`)
+- **Blocage manuel** (Admin → Semaines → "Bloquer + Résumé") : même comportement — verrouille, affiche/enregistre le résumé, enchaîne la semaine suivante
+- **Anti-doublon** : `transaction()` sur `semaines/{id}/bloquee` (un seul client verrouille) et sur `semaine_index/{debut}` (un seul client crée une semaine pour un créneau donné)
+- **Admin → Semaines → création manuelle** (`creerSemaine()`) : s'enchaîne aussi après la dernière semaine existante (bloquée ou non), via `prochainesBornes` — évite les créneaux dupliqués qui provoquaient un verrouillage instantané
+- Pas de vrai cron côté serveur (site statique) : le déclenchement dépend qu'un membre ouvre une page après l'heure de verrouillage.
+
+⚠️ **Incident résolu (19/07)** : une édition du fichier `admin.html` faite depuis le téléphone (éditeur GitHub mobile) avait supprimé toute la structure HTML (`<!DOCTYPE>`, `<head>`, `<body>`, balises `<script src=...>`) et ne laissait que le JS brut → la page affichait le code au lieu de l'exécuter. Fichier reconstruit avec sa structure complète. **Toujours éditer les fichiers via ordinateur/git plutôt que l'éditeur mobile GitHub pour du HTML complet.**
 
 ## QUOTAS
 - Global : filtre `!a.produit_drogue_id` (exclut drogue ET labo)
