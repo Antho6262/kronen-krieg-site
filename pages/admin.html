@@ -1,20 +1,3 @@
-<!DOCTYPE html>
-<html lang="fr">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Admin — Kronen Krieg</title>
-<link rel="stylesheet" href="../css/style.css">
-</head>
-<body>
-<div id="shell"></div>
-
-<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
-<script src="../js/firebase-config.js"></script>
-<script src="../js/app.js"></script>
-<script>
 let SESSION;
 const TABS = ["semaines", "membres", "stock", "actions", "quotas", "grades", "visibilite", "permissions", "config"];
 const TAB_LABELS = { visibilite: "Visibilité" };
@@ -57,6 +40,7 @@ async function tabSemaines(body) {
       <div class="panel-head"><h2>Nouvelle semaine</h2></div>
       <div class="row"><input type="text" id="newSemaineNom" placeholder="Nom (ex: Semaine 2)">
       <button class="btn btn-primary" onclick="creerSemaine()">Créer</button></div>
+      <p class="small muted mt8">La semaine créée s'enchaîne automatiquement après la dernière semaine existante (7 jours, verrouillage le dimanche à 19h00). Laisse le nom vide pour un nom automatique.</p>
     </div>
     <div class="panel">
       <div class="panel-head"><h2>Semaines</h2></div>
@@ -79,17 +63,31 @@ async function tabSemaines(body) {
     </div>
   `;
 }
+/* Crée la prochaine semaine, enchaînée après la dernière semaine existante
+   (peu importe si celle-ci est bloquée ou non). Évite les doublons de créneau
+   qui provoquaient un verrouillage instantané. */
 async function creerSemaine() {
   const saisie = document.getElementById("newSemaineNom").value.trim();
-  const now = Date.now();
-  const bounds = limitesSemaine(now);
+  const snap = await db.ref("semaines").once("value");
+  const list = entries(snap.val()).map(([id, s]) => ({ id, ...s })).sort((a, b) => (b.debut || 0) - (a.debut || 0));
+  const derniere = list[0] || null;
+  const bounds = prochainesBornes(derniere);
+
+  const idxRef = db.ref("semaine_index/" + bounds.debut);
+  const existeSnap = await idxRef.once("value");
+  if (existeSnap.exists()) {
+    toast("Cette semaine existe déjà.", true);
+    loadTab("semaines");
+    return;
+  }
+
   const nom = saisie || nomAutoSemaine(bounds.debut, bounds.fin);
   const id = uid();
   await db.ref("semaines/" + id).set({
-    nom, bloquee: false, createdAt: now,
+    nom, bloquee: false, createdAt: Date.now(),
     debut: bounds.debut, fin: bounds.fin, verrouAt: bounds.verrouAt
   });
-  await db.ref("semaine_index/" + bounds.debut).set(id);
+  await idxRef.set(id);
   toast("Semaine créée.");
   loadTab("semaines");
 }
@@ -103,6 +101,9 @@ async function suppSemaine(id) {
   await db.ref("actions/" + id).remove();
   loadTab("semaines");
 }
+/* Blocage manuel : verrouille la semaine, affiche le résumé, ET ouvre
+   automatiquement la semaine suivante (même comportement que le
+   verrouillage automatique de 19h00). */
 async function bloquerSemaine(id, nom) {
   const snap = await db.ref("actions/" + id).once("value");
   const actions = entries(snap.val()).map(([aid, a]) => a);
@@ -121,7 +122,7 @@ async function bloquerSemaine(id, nom) {
     `Gains propre : ${formatMoney(gainsPropre)}\n\n` +
     `Classement :\n${classement || "—"}`;
 
-  await db.ref("semaines/" + id).update({ bloquee: true, closedAt: Date.now() });
+  await db.ref("semaines/" + id).update({ bloquee: true, closedAt: Date.now(), resume: texte });
   document.getElementById("resumeWrap").style.display = "block";
   document.getElementById("resumeText").value = texte;
 
@@ -133,6 +134,12 @@ async function bloquerSemaine(id, nom) {
       toast("Résumé envoyé sur Discord.");
     } catch (e) { toast("Webhook configuré mais envoi impossible (CORS/URL).", true); }
   }
+
+  // Ouvre immédiatement la semaine suivante (7 jours après le verrouillage prévu de celle-ci).
+  const semSnap = await db.ref("semaines/" + id).once("value");
+  const semaineBloquee = { id, ...semSnap.val() };
+  await creerSemaineSuivante(semaineBloquee);
+
   loadTab("semaines");
   document.getElementById("resumeWrap").style.display = "block";
   document.getElementById("resumeText").value = texte;
@@ -748,6 +755,3 @@ async function saveConfig() {
   if (!SESSION) return;
   renderContent();
 })();
-</script>
-</body>
-</html>
