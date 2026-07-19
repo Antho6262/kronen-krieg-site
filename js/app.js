@@ -19,12 +19,19 @@ const NAV_ITEMS = [
 
 /* ============================================================
    SYSTÈME DE SEMAINES AUTOMATIQUE
-   Semaine = lundi 00:00 → dimanche 23:59. Verrouillage auto le
-   dimanche à 19h00 (heure du navigateur) + création automatique
-   de la semaine suivante. Basé sur transactions Firebase pour
-   éviter les doublons si plusieurs membres sont connectés en
-   même temps.
+   - La toute première semaine (créée quand la base est vide) est
+     alignée sur le calendrier : lundi 00:00 → dimanche 23:59,
+     verrouillage automatique le dimanche à 19h00.
+   - Ensuite, les semaines s'enchaînent en continu : dès qu'une
+     semaine est verrouillée (à 19h00 pile, ou manuellement par un
+     admin), la semaine suivante s'ouvre immédiatement (19h01) et
+     se verrouillera exactement 7 jours plus tard à 19h00.
+   - Protégé par transaction Firebase pour éviter les doublons si
+     plusieurs membres sont connectés en même temps.
    ============================================================ */
+const SEPT_JOURS_MS = 7 * 24 * 60 * 60 * 1000;
+const UNE_MINUTE_MS = 60 * 1000;
+
 function getLundi(ts) {
   const d = new Date(ts);
   d.setHours(0, 0, 0, 0);
@@ -33,6 +40,8 @@ function getLundi(ts) {
   d.setDate(d.getDate() + diff);
   return d;
 }
+/* Bornes de la toute première semaine (alignée calendrier), utilisée
+   uniquement quand aucune semaine n'existe encore dans la base. */
 function limitesSemaine(ts) {
   const lundi = getLundi(ts);
   const dimanche = new Date(lundi);
@@ -43,6 +52,17 @@ function limitesSemaine(ts) {
   verrouAt.setHours(19, 0, 0, 0);
   return { debut: lundi.getTime(), fin: dimanche.getTime(), verrouAt: verrouAt.getTime() };
 }
+/* Bornes de la semaine SUIVANTE, enchaînée directement après le
+   verrouillage de la semaine précédente (pas besoin d'attendre lundi). */
+function prochainesBornes(semainePrecedente) {
+  if (!semainePrecedente || !semainePrecedente.verrouAt) {
+    return limitesSemaine(Date.now());
+  }
+  const debut = semainePrecedente.verrouAt + UNE_MINUTE_MS;
+  const verrouAt = semainePrecedente.verrouAt + SEPT_JOURS_MS;
+  const fin = verrouAt;
+  return { debut, fin, verrouAt };
+}
 function fmtJJMM(ts) {
   const d = new Date(ts);
   return String(d.getDate()).padStart(2, "0") + "/" + String(d.getMonth() + 1).padStart(2, "0");
@@ -50,6 +70,27 @@ function fmtJJMM(ts) {
 function nomAutoSemaine(debut, fin) {
   return "Semaine du " + fmtJJMM(debut) + " au " + fmtJJMM(fin);
 }
+
+/* Crée (de façon sûre, sans doublon) la semaine qui suit "semainePrecedente".
+   Retourne l'id de la semaine (existante ou nouvellement créée). */
+async function creerSemaineSuivante(semainePrecedente) {
+  const bounds = prochainesBornes(semainePrecedente);
+  const idxRef = db.ref("semaine_index/" + bounds.debut);
+  const res = await idxRef.transaction(cur => (cur === null ? true : undefined));
+  if (!res.committed) {
+    const existSnap = await idxRef.once("value");
+    return existSnap.val();
+  }
+  const id = uid();
+  const nom = nomAutoSemaine(bounds.debut, bounds.fin);
+  await db.ref("semaines/" + id).set({
+    nom, bloquee: false, createdAt: Date.now(),
+    debut: bounds.debut, fin: bounds.fin, verrouAt: bounds.verrouAt, auto: true
+  });
+  await idxRef.set(id);
+  return id;
+}
+
 /* Verrouille une semaine (résumé + webhook Discord si configuré).
    Protégé par transaction : un seul client exécute réellement le verrouillage. */
 async function verrouillerSemaineAuto(id, nom) {
@@ -83,35 +124,46 @@ async function verrouillerSemaineAuto(id, nom) {
     }
   } catch (e) { console.error("verrouillerSemaineAuto", e); }
 }
-/* Vérifie la semaine active à chaque chargement de page :
-   - verrouille l'ancienne si l'heure de verrouillage est dépassée
-   - crée la semaine courante si elle n'existe pas encore */
+
+/* Vérifie l'état des semaines à chaque chargement de page :
+   - verrouille en chaîne toute semaine dont l'heure de verrouillage
+     (19h00) est dépassée
+   - ouvre immédiatement la semaine suivante après chaque verrouillage
+     (pas besoin d'attendre le lundi)
+   - si aucune semaine n'existe encore, crée la toute première
+     (alignée sur le calendrier lundi→dimanche) */
 async function ensureSemaineAuto() {
   try {
     const now = Date.now();
     const snap = await db.ref("semaines").once("value");
     const list = entries(snap.val()).map(([id, s]) => ({ id, ...s }));
-    list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-    const active = list.find(s => s.bloquee !== true);
+    list.sort((a, b) => (b.debut || 0) - (a.debut || 0));
+    let latest = list[0] || null;
 
-    if (active && active.verrouAt && now >= active.verrouAt) {
-      await verrouillerSemaineAuto(active.id, active.nom);
+    if (!latest) {
+      // Aucune semaine n'existe : on crée la première, alignée calendrier.
+      const bounds = limitesSemaine(now);
+      const id = uid();
+      const nom = nomAutoSemaine(bounds.debut, bounds.fin);
+      await db.ref("semaines/" + id).set({
+        nom, bloquee: false, createdAt: now,
+        debut: bounds.debut, fin: bounds.fin, verrouAt: bounds.verrouAt, auto: true
+      });
+      await db.ref("semaine_index/" + bounds.debut).set(id);
+      return;
     }
 
-    const bounds = limitesSemaine(now);
-    const existeDeja = list.some(s => s.debut === bounds.debut);
-    if (!existeDeja) {
-      const idxRef = db.ref("semaine_index/" + bounds.debut);
-      const res = await idxRef.transaction(cur => (cur === null ? true : undefined));
-      if (res.committed) {
-        const id = uid();
-        const nom = nomAutoSemaine(bounds.debut, bounds.fin);
-        await db.ref("semaines/" + id).set({
-          nom, bloquee: false, createdAt: now,
-          debut: bounds.debut, fin: bounds.fin, verrouAt: bounds.verrouAt, auto: true
-        });
-        await idxRef.set(id);
+    // Verrouille en chaîne toutes les semaines déjà expirées, et ouvre
+    // la suivante juste après, jusqu'à retomber sur une semaine encore active.
+    let garde = 0; // sécurité anti-boucle infinie
+    while (latest && latest.verrouAt && now >= latest.verrouAt && garde < 100) {
+      garde++;
+      if (!latest.bloquee) {
+        await verrouillerSemaineAuto(latest.id, latest.nom);
       }
+      const nextId = await creerSemaineSuivante(latest);
+      const nextSnap = await db.ref("semaines/" + nextId).once("value");
+      latest = { id: nextId, ...nextSnap.val() };
     }
   } catch (e) { console.error("ensureSemaineAuto", e); }
 }
