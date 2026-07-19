@@ -49,6 +49,7 @@ const FIREBASE_CONFIG = {
 5. **Transactions** : champ "Groupe" rendu optionnel (plus de blocage si vide, affiche "-" dans le tableau et dans la description de la transaction).
 6. **Paye** : type d'argent par défaut sur **Propre** (au lieu de Sale) — montant suggéré/affiché déjà réduit du taux de blanchiment.
 7. **Taxes** : "Type de taxe" renommé en **"Zone de taxe"** (UI uniquement, le nœud Firebase reste `types_taxes`). Champ "Notes" retiré, remplacé par un champ **"Code à donner"** (`code`) saisi manuellement par le membre (auto-généré en secours si laissé vide) — affiché dans l'historique, à donner au groupe payé. Chaque taxe a `expireAt` = `createdAt` + 7 jours ; l'historique affiche date/heure de paiement, date/heure d'expiration et un badge Active/Expirée.
+8. **Tracker** : bug hérité de Volta — le libellé "Semaine active : —" en haut de page était codé en dur et jamais mis à jour. Corrigé : affiche maintenant le nom de la semaine active réelle (ou un message explicite si aucune semaine n'existe encore).
 
 ## STRUCTURE DU SITE
 kronen-krieg-site/

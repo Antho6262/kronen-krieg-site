@@ -367,6 +367,8 @@ async function supprimerAction(id) {
   if (!SESSION) return;
   ACTIVE_WEEK = await getActiveWeek();
   renderContent();
+  const lbl = document.getElementById("weekLabel");
+  if (lbl) lbl.textContent = ACTIVE_WEEK ? `Semaine active : ${ACTIVE_WEEK.nom}${ACTIVE_WEEK.bloquee ? " (bloquée)" : ""}` : "Semaine active : aucune (elle sera créée automatiquement à ta prochaine visite)";
   await chargerListes();
   await renderTable();
 
