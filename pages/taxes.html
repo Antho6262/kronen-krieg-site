@@ -42,6 +42,7 @@ function renderContent() {
       </div>
       <div class="row mt8">
         <div><label class="l">Date</label><input type="date" id="xDate"></div>
+        <div><label class="l">Code à donner</label><input type="text" id="xCode" placeholder="Ex: PALETO7"></div>
       </div>
       <button class="btn btn-primary mt16" onclick="ajouterTaxe()">Enregistrer</button>
     </div>
@@ -99,7 +100,7 @@ async function ajouterTaxe() {
   const m = MEMBRES[membreId] || {};
   const id = uid();
   const date = document.getElementById("xDate").value || todayISO();
-  const code = genererCodeTaxe();
+  const code = document.getElementById("xCode").value.trim().toUpperCase() || genererCodeTaxe();
   const createdAt = Date.now();
 
   await db.ref("taxes/" + id).set({
@@ -110,7 +111,7 @@ async function ajouterTaxe() {
   await db.ref(`argent/${typeArgent}/${id}`).set({ date, description: "Taxe " + taxeNom + " — " + groupe, type: "Sortie", montant, responsable: m.prenom || SESSION.prenom, createdAt });
 
   toast(`Taxe enregistrée. Code à donner : ${code}`);
-  document.getElementById("xGroupe").value = ""; document.getElementById("xMontant").value = "";
+  document.getElementById("xGroupe").value = ""; document.getElementById("xMontant").value = ""; document.getElementById("xCode").value = "";
   chargerTaxes();
 }
 

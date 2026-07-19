@@ -48,7 +48,7 @@ const FIREBASE_CONFIG = {
 4. **Système de semaines automatique** (nouveau, absent de Volta) — voir section dédiée ci-dessous.
 5. **Transactions** : champ "Groupe" rendu optionnel (plus de blocage si vide, affiche "-" dans le tableau et dans la description de la transaction).
 6. **Paye** : type d'argent par défaut sur **Propre** (au lieu de Sale) — montant suggéré/affiché déjà réduit du taux de blanchiment.
-7. **Taxes** : "Type de taxe" renommé en **"Zone de taxe"** (UI uniquement, le nœud Firebase reste `types_taxes`). Champ "Notes" retiré, remplacé par un **code généré automatiquement** (`code`, 6 caractères alphanumériques) affiché dans l'historique et dans le toast de confirmation — à donner par le membre au groupe payé. Chaque taxe a désormais `expireAt` = `createdAt` + 7 jours ; l'historique affiche date/heure de paiement, date/heure d'expiration et un badge Active/Expirée.
+7. **Taxes** : "Type de taxe" renommé en **"Zone de taxe"** (UI uniquement, le nœud Firebase reste `types_taxes`). Champ "Notes" retiré, remplacé par un champ **"Code à donner"** (`code`) saisi manuellement par le membre (auto-généré en secours si laissé vide) — affiché dans l'historique, à donner au groupe payé. Chaque taxe a `expireAt` = `createdAt` + 7 jours ; l'historique affiche date/heure de paiement, date/heure d'expiration et un badge Active/Expirée.
 
 ## STRUCTURE DU SITE
 kronen-krieg-site/
