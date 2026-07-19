@@ -25,10 +25,10 @@ function renderContent() {
 
     <div class="panel mt16">
       <div class="panel-head"><h2>Nouvelle taxe</h2>
-        <span class="btn btn-sm btn-gold" onclick="toggleNouveauType()">➕ Nouveau type de taxe</span></div>
+        <span class="btn btn-sm btn-gold" onclick="toggleNouveauType()">➕ Nouvelle zone de taxe</span></div>
       <div class="row" id="newTypeRow" style="display:none;">
-        <input type="text" id="newTypeNom" placeholder="Nom du type de taxe">
-        <button class="btn btn-sm" onclick="creerTypeTaxe()">Créer le type</button>
+        <input type="text" id="newTypeNom" placeholder="Nom de la zone">
+        <button class="btn btn-sm" onclick="creerTypeTaxe()">Créer la zone</button>
       </div>
       <div class="row mt8">
         <div><label class="l">Groupe</label><input type="text" id="xGroupe"></div>
@@ -36,21 +36,20 @@ function renderContent() {
         <div><label class="l">Membre responsable</label><select id="xMembre"></select></div>
       </div>
       <div class="row mt8">
-        <div><label class="l">Type de taxe</label><select id="xTaxe"></select></div>
+        <div><label class="l">Zone de taxe</label><select id="xTaxe"></select></div>
         <div><label class="l">Montant ($)</label><input type="number" id="xMontant"></div>
         <div><label class="l">Argent</label><select id="xTypeArgent"><option value="sale">Sale</option><option value="propre">Propre</option></select></div>
       </div>
       <div class="row mt8">
         <div><label class="l">Date</label><input type="date" id="xDate"></div>
-        <div><label class="l">Notes</label><input type="text" id="xNotes" placeholder="Optionnel"></div>
       </div>
       <button class="btn btn-primary mt16" onclick="ajouterTaxe()">Enregistrer</button>
     </div>
 
     <div class="panel">
       <div class="panel-head"><h2>Historique</h2></div>
-      <table><thead><tr><th>Date</th><th>Groupe</th><th>Type</th><th>Responsable</th><th>Montant</th><th>Argent</th><th></th></tr></thead>
-        <tbody id="tblTaxes"><tr class="empty-row"><td colspan="7">Chargement…</td></tr></tbody></table>
+      <table><thead><tr><th>Payée le</th><th>Expire le</th><th>Statut</th><th>Groupe</th><th>Zone</th><th>Responsable</th><th>Montant</th><th>Argent</th><th>Code</th><th></th></tr></thead>
+        <tbody id="tblTaxes"><tr class="empty-row"><td colspan="10">Chargement…</td></tr></tbody></table>
     </div>
   `;
   document.getElementById("xDate").value = todayISO();
@@ -84,6 +83,10 @@ async function chargerMembres() {
   entries(MEMBRES).forEach(([id, m]) => { if (m.actif !== false) sel.appendChild(new Option(m.prenom, id, id === SESSION.id, id === SESSION.id)); });
 }
 
+function genererCodeTaxe() {
+  return Math.random().toString(36).slice(2, 8).toUpperCase();
+}
+
 async function ajouterTaxe() {
   const taxeId = document.getElementById("xTaxe").value;
   const groupe = document.getElementById("xGroupe").value.trim();
@@ -96,16 +99,18 @@ async function ajouterTaxe() {
   const m = MEMBRES[membreId] || {};
   const id = uid();
   const date = document.getElementById("xDate").value || todayISO();
+  const code = genererCodeTaxe();
+  const createdAt = Date.now();
 
   await db.ref("taxes/" + id).set({
     groupe, telephone: document.getElementById("xTel").value.trim(),
     membre_id: membreId, prenom_membre: m.prenom || "", taxe_id: taxeId, taxe_nom: taxeNom,
-    montant, type_argent: typeArgent, notes: document.getElementById("xNotes").value.trim(), date, createdAt: Date.now()
+    montant, type_argent: typeArgent, code, date, createdAt, expireAt: createdAt + 7 * 24 * 60 * 60 * 1000
   });
-  await db.ref(`argent/${typeArgent}/${id}`).set({ date, description: "Taxe " + taxeNom + " — " + groupe, type: "Sortie", montant, responsable: m.prenom || SESSION.prenom, createdAt: Date.now() });
+  await db.ref(`argent/${typeArgent}/${id}`).set({ date, description: "Taxe " + taxeNom + " — " + groupe, type: "Sortie", montant, responsable: m.prenom || SESSION.prenom, createdAt });
 
-  toast("Taxe enregistrée.");
-  document.getElementById("xGroupe").value = ""; document.getElementById("xMontant").value = ""; document.getElementById("xNotes").value = "";
+  toast(`Taxe enregistrée. Code à donner : ${code}`);
+  document.getElementById("xGroupe").value = ""; document.getElementById("xMontant").value = "";
   chargerTaxes();
 }
 
@@ -113,10 +118,18 @@ async function chargerTaxes() {
   const snap = await db.ref("taxes").once("value");
   const list = entries(snap.val()).map(([id, t]) => ({ id, ...t })).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
   const canDelete = SESSION.role === "admin";
-  document.getElementById("tblTaxes").innerHTML = list.length ? list.map(t => `
-    <tr><td>${t.date}</td><td>${t.groupe}</td><td>${t.taxe_nom}</td><td>${t.prenom_membre}</td><td>${formatMoney(t.montant)}</td><td>${t.type_argent}</td>
+  const now = Date.now();
+  document.getElementById("tblTaxes").innerHTML = list.length ? list.map(t => {
+    const expireAt = t.expireAt || ((t.createdAt || 0) + 7 * 24 * 60 * 60 * 1000);
+    const expiree = now >= expireAt;
+    return `
+    <tr><td>${t.createdAt ? new Date(t.createdAt).toLocaleString('fr-FR') : t.date}</td>
+    <td>${new Date(expireAt).toLocaleString('fr-FR')}</td>
+    <td><span class="badge ${expiree ? 'badge-fail' : 'badge-ok'}">${expiree ? 'Expirée' : 'Active'}</span></td>
+    <td>${t.groupe}</td><td>${t.taxe_nom}</td><td>${t.prenom_membre}</td><td>${formatMoney(t.montant)}</td><td>${t.type_argent}</td>
+    <td class="mono">${t.code || "-"}</td>
     <td>${canDelete ? `<span class="btn btn-sm btn-danger" onclick="supprimerTaxe('${t.id}')">Suppr.</span>` : ""}</td></tr>
-  `).join("") : '<tr class="empty-row"><td colspan="7">Aucune taxe</td></tr>';
+  `; }).join("") : '<tr class="empty-row"><td colspan="10">Aucune taxe</td></tr>';
 }
 async function supprimerTaxe(id) {
   if (!confirm("Supprimer cette taxe ? Le montant sera réajouté automatiquement.")) return;
