@@ -106,7 +106,9 @@ function formatDate(d) {
   } catch (e) { return d; }
 }
 function todayISO() {
-  return new Date().toISOString().slice(0, 10);
+  const d = new Date();
+  const tz = d.getTimezoneOffset() * 60000;
+  return new Date(d.getTime() - tz).toISOString().slice(0, 10);
 }
 function nowHHMM() {
   const d = new Date();

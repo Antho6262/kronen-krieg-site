@@ -50,6 +50,7 @@ const FIREBASE_CONFIG = {
 6. **Paye** : type d'argent par défaut sur **Propre** (au lieu de Sale) — montant suggéré/affiché déjà réduit du taux de blanchiment.
 7. **Taxes** : "Type de taxe" renommé en **"Zone de taxe"** (UI uniquement, le nœud Firebase reste `types_taxes`). Champ "Notes" retiré, remplacé par un champ **"Code à donner"** (`code`) saisi manuellement par le membre (auto-généré en secours si laissé vide) — affiché dans l'historique, à donner au groupe payé. Chaque taxe a `expireAt` = `createdAt` + 7 jours ; l'historique affiche date/heure de paiement, date/heure d'expiration et un badge Active/Expirée.
 8. **Tracker** : bug hérité de Volta — le libellé "Semaine active : —" en haut de page était codé en dur et jamais mis à jour. Corrigé : affiche maintenant le nom de la semaine active réelle (ou un message explicite si aucune semaine n'existe encore).
+9. **`todayISO()`** (js/firebase-config.js) : bug hérité de Volta — utilisait `toISOString()` qui renvoie la date en UTC, donc affichait la veille pendant les heures où l'heure française est en avance sur UTC (ex: 00h58 locale → encore 19/07 en UTC). Corrigé pour utiliser la date locale du navigateur.
 
 ## STRUCTURE DU SITE
 kronen-krieg-site/
