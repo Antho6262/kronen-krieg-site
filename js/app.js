@@ -14,6 +14,7 @@ const NAV_ITEMS = [
   { page: "transactions", icon: "🔁", label: "Transactions", file: "transactions.html" },
   { page: "taxes",        icon: "🧾", label: "Taxes",        file: "taxes.html" },
   { page: "admin",        icon: "⚙️", label: "Admin",        file: "admin.html" },
+  { page: "tv",           icon: "🖥️", label: "Mode TV",      file: "tv.html" },
   { page: "profil",       icon: "👤", label: "Profil",       file: "profil.html" }
 ];
 

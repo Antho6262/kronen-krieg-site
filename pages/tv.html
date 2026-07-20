@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TV — Kronen Krieg</title>
+<link rel="stylesheet" href="../css/style.css">
+<style>
+  html,body{height:100%; margin:0; overflow:hidden; background:#020202;}
+  #tvRoot{position:fixed; inset:0; background:#020202; color:#f2ede2; font-family:var(--font-body);}
+
+  /* ---------- Écran de démarrage (geste utilisateur requis pour le son/plein écran) ---------- */
+  #startGate{position:fixed; inset:0; z-index:50; background:#020202; display:flex; align-items:center; justify-content:center; flex-direction:column; gap:22px;}
+  #startGate img{width:110px; height:110px; border-radius:50%; border:2px solid var(--gold); box-shadow:0 0 40px rgba(255,206,0,.35);}
+  #startGate h1{font-family:var(--font-display); font-size:38px; letter-spacing:.08em; color:var(--gold); margin:0; text-align:center;}
+  #startGate p{color:#9a938a; font-size:14px; letter-spacing:.03em;}
+  #startBtn{cursor:pointer; padding:16px 42px; font-family:var(--font-display); font-weight:700; font-size:16px; letter-spacing:.12em; text-transform:uppercase;
+    color:#1a0d00; background:linear-gradient(180deg,#ffe27a,var(--gold)); border:1px solid #a17e00; border-radius:6px; box-shadow:0 0 30px rgba(255,206,0,.4);}
+  #startBtn:hover{filter:brightness(1.08);}
+
+  /* ---------- Fond de particules (braises) ---------- */
+  #emberCanvas{position:absolute; inset:0; z-index:1;}
+
+  /* Vignette + grille tactique */
+  #tvRoot::before{content:""; position:absolute; inset:0; z-index:2; pointer-events:none;
+    background:radial-gradient(ellipse at center, rgba(0,0,0,0) 40%, rgba(0,0,0,.75) 100%);}
+  .scanlines{position:absolute; inset:0; z-index:3; pointer-events:none; opacity:.05;
+    background:repeating-linear-gradient(180deg, #fff 0px, #fff 1px, transparent 2px, transparent 4px);}
+  .gridlines{position:absolute; inset:0; z-index:2; pointer-events:none; opacity:.06;
+    background-image:linear-gradient(rgba(255,206,0,.5) 1px, transparent 1px), linear-gradient(90deg, rgba(255,206,0,.5) 1px, transparent 1px);
+    background-size:64px 64px;}
+
+  /* Croix de fer filigrane */
+  .ironwatermark{position:absolute; z-index:2; top:50%; left:50%; width:900px; height:900px; margin:-450px 0 0 -450px;
+    opacity:.035; pointer-events:none;
+    background:
+      linear-gradient(var(--steel),var(--steel)) center/100% 26% no-repeat,
+      linear-gradient(var(--steel),var(--steel)) center/26% 100% no-repeat;
+    clip-path: polygon(38% 0,62% 0,62% 38%,100% 38%,100% 62%,62% 62%,62% 100%,38% 100%,38% 62%,0 62%,0 38%,38% 38%);}
+
+  /* ---------- Top bar ---------- */
+  #tvTop{position:relative; z-index:10; display:flex; align-items:center; justify-content:space-between; padding:26px 48px 0;}
+  #tvBrand{display:flex; align-items:center; gap:16px;}
+  #tvBrand img{width:52px; height:52px; border-radius:50%; border:1px solid var(--gold);}
+  #tvBrand .word{font-family:var(--font-display); font-weight:700; font-size:26px; letter-spacing:.14em; color:var(--gold); text-shadow:0 0 18px rgba(255,206,0,.35);}
+  #tvBrand .sub{font-size:11px; letter-spacing:.25em; color:#9a938a; text-transform:uppercase; margin-top:2px;}
+  #tvClock{text-align:right;}
+  #tvClock .time{font-family:var(--font-mono); font-size:34px; font-weight:600; color:#f2ede2; letter-spacing:.04em;}
+  #tvClock .date{font-size:12px; letter-spacing:.1em; color:#9a938a; text-transform:uppercase;}
+
+  /* ---------- Scène (stage) ---------- */
+  #stageWrap{position:relative; z-index:10; height:calc(100% - 150px); display:flex; align-items:center; justify-content:center; perspective:1800px;}
+  #stageFrame{position:relative; width:min(1400px, 88vw); height:min(760px, 72vh); }
+
+  /* coins HUD */
+  .hud-corner{position:absolute; width:46px; height:46px; border-color:var(--gold); opacity:.85;}
+  .hud-corner.tl{top:-14px; left:-14px; border-top:3px solid var(--gold); border-left:3px solid var(--gold);}
+  .hud-corner.tr{top:-14px; right:-14px; border-top:3px solid var(--gold); border-right:3px solid var(--gold);}
+  .hud-corner.bl{bottom:-14px; left:-14px; border-bottom:3px solid var(--gold); border-left:3px solid var(--gold);}
+  .hud-corner.br{bottom:-14px; right:-14px; border-bottom:3px solid var(--gold); border-right:3px solid var(--gold);}
+
+  #stage{width:100%; height:100%; border:1px solid rgba(255,206,0,.25); border-radius:10px;
+    background:linear-gradient(180deg, rgba(20,10,10,.55), rgba(5,3,3,.75));
+    backdrop-filter:blur(2px);
+    box-shadow:0 0 80px rgba(208,0,0,.15), inset 0 0 60px rgba(0,0,0,.5);
+    padding:38px 50px; box-sizing:border-box; overflow:hidden;
+    transform-style:preserve-3d; transition:transform .55s cubic-bezier(.6,.05,.3,1), opacity .5s ease;}
+  #stage.flip-out{transform:rotateY(-92deg) scale(.94); opacity:0;}
+  #stage.flip-in{transform:rotateY(0deg) scale(1); opacity:1;}
+
+  .slide-eyebrow{font-size:13px; letter-spacing:.3em; color:var(--steel); text-transform:uppercase; font-weight:600;}
+  .slide-title{font-family:var(--font-display); font-size:42px; color:var(--gold); margin:2px 0 26px; letter-spacing:.03em;
+    position:relative; display:inline-block;}
+  .slide-title.glitch{animation:glitchText .5s steps(2,end) 1;}
+  @keyframes glitchText{
+    0%{ text-shadow:0 0 0 transparent; transform:translateX(0);}
+    20%{ text-shadow:-3px 0 var(--steel), 3px 0 var(--gold); transform:translateX(-2px);}
+    40%{ text-shadow:3px 0 var(--steel), -3px 0 var(--gold); transform:translateX(2px);}
+    60%{ text-shadow:-2px 0 var(--steel), 2px 0 var(--gold); transform:translateX(-1px);}
+    100%{ text-shadow:0 0 0 transparent; transform:translateX(0);}
+  }
+
+  /* ---------- Classement ---------- */
+  .lb-row{display:flex; align-items:center; gap:18px; padding:12px 0; border-bottom:1px solid rgba(255,255,255,.06);}
+  .lb-rank{width:46px; font-family:var(--font-mono); font-size:22px; color:#9a938a; text-align:center;}
+  .lb-rank.top1{color:var(--gold); font-size:30px;}
+  .lb-rank.top2{color:#d7d7d7; font-size:26px;}
+  .lb-rank.top3{color:#cd7f32; font-size:26px;}
+  .lb-name{flex:1; font-size:19px; font-weight:600;}
+  .lb-bar-wrap{flex:2; height:10px; background:rgba(255,255,255,.06); border-radius:6px; overflow:hidden;}
+  .lb-bar{height:100%; border-radius:6px; background:linear-gradient(90deg, var(--steel), var(--gold)); width:0%; transition:width 1.1s cubic-bezier(.2,.8,.2,1);}
+  .lb-num{width:150px; text-align:right; font-family:var(--font-mono); font-size:20px; color:var(--gold);}
+
+  /* ---------- Stock ---------- */
+  .stock-grid{display:grid; grid-template-columns:repeat(3, 1fr); gap:22px;}
+  .stock-card{background:rgba(255,255,255,.03); border:1px solid rgba(255,255,255,.08); border-radius:10px; padding:18px;}
+  .stock-card h3{margin:0 0 12px; font-family:var(--font-display); font-size:18px; color:#f2ede2;}
+  .stock-item{display:flex; align-items:center; gap:10px; margin-bottom:9px; font-size:13px;}
+  .stock-item .nom{width:120px; flex-shrink:0; color:#cfc8bc; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .stock-item .bar-wrap{flex:1; height:8px; background:rgba(255,255,255,.06); border-radius:5px; overflow:hidden;}
+  .stock-item .bar{height:100%; border-radius:5px; background:linear-gradient(90deg,#2f8f4e,#5fd57e); width:0%; transition:width 1.1s ease;}
+  .stock-item.low .bar{background:linear-gradient(90deg, var(--steel), #ff4d4d); animation:pulseLow 1.4s infinite;}
+  .stock-item .val{width:64px; text-align:right; font-family:var(--font-mono); color:#9a938a;}
+  @keyframes pulseLow{0%,100%{filter:brightness(1);} 50%{filter:brightness(1.5);}}
+
+  /* ---------- Résumé ---------- */
+  .kpi-row{display:flex; gap:22px; margin-bottom:30px;}
+  .kpi{flex:1; background:rgba(255,255,255,.03); border:1px solid rgba(255,255,255,.08); border-radius:10px; padding:22px; text-align:center;}
+  .kpi .lbl{font-size:12px; letter-spacing:.15em; text-transform:uppercase; color:#9a938a; margin-bottom:10px;}
+  .kpi .num{font-family:var(--font-mono); font-size:40px; font-weight:700; color:var(--gold);}
+  .kpi .num.small{font-size:28px;}
+  .mini-podium{display:flex; gap:16px; justify-content:center; align-items:flex-end;}
+  .mini-podium .p{background:rgba(255,255,255,.04); border:1px solid rgba(255,206,0,.2); border-radius:8px 8px 0 0; padding:14px 22px; text-align:center;}
+  .mini-podium .p .medal{font-size:26px;}
+  .mini-podium .p .nom{font-weight:600; margin-top:4px;}
+  .mini-podium .p .n{font-family:var(--font-mono); color:var(--gold); font-size:13px;}
+  .mini-podium .p1{height:120px;} .mini-podium .p2{height:92px;} .mini-podium .p3{height:76px;}
+
+  /* progression rotation */
+  #progressWrap{position:absolute; bottom:-24px; left:0; right:0; height:3px; background:rgba(255,255,255,.08); border-radius:2px; overflow:hidden;}
+  #progressBar{height:100%; width:0%; background:linear-gradient(90deg, var(--steel), var(--gold));}
+
+  #tvFooter{position:relative; z-index:10; text-align:center; padding:26px 0 14px; font-size:11px; letter-spacing:.2em; color:#5b544c; text-transform:uppercase;}
+
+  #exitBtn{position:fixed; top:18px; right:18px; z-index:60; opacity:.35; color:#fff; text-decoration:none; font-size:12px; letter-spacing:.1em;
+    border:1px solid rgba(255,255,255,.25); padding:6px 12px; border-radius:6px;}
+  #exitBtn:hover{opacity:1;}
+</style>
+</head>
+<body>
+<div id="startGate">
+  <img src="../img/logo.png" alt="Kronen Krieg">
+  <h1>MODE TV — KRONEN KRIEG</h1>
+  <p>Écran d'affichage collectif — classement, stock &amp; bilan de semaine en direct.</p>
+  <div id="startBtn">▶ Démarrer l'affichage</div>
+</div>
+
+<div id="tvRoot" style="display:none;">
+  <canvas id="emberCanvas"></canvas>
+  <div class="gridlines"></div>
+  <div class="ironwatermark"></div>
+  <div class="scanlines"></div>
+
+  <a href="dashboard.html" id="exitBtn">✕ Quitter</a>
+
+  <div id="tvTop">
+    <div id="tvBrand">
+      <img src="../img/logo.png" alt="">
+      <div>
+        <div class="word">KRONEN KRIEG</div>
+        <div class="sub">Centre de commandement</div>
+      </div>
+    </div>
+    <div id="tvClock">
+      <div class="time" id="clockTime">--:--:--</div>
+      <div class="date" id="clockDate">-</div>
+    </div>
+  </div>
+
+  <div id="stageWrap">
+    <div id="stageFrame">
+      <div class="hud-corner tl"></div><div class="hud-corner tr"></div>
+      <div class="hud-corner bl"></div><div class="hud-corner br"></div>
+      <div id="stage"><div id="stageContent"></div></div>
+      <div id="progressWrap"><div id="progressBar"></div></div>
+    </div>
+  </div>
+
+  <div id="tvFooter">Kronen Krieg — Honneur · Loyauté · Silence</div>
+</div>
+
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+<script src="../js/firebase-config.js"></script>
+<script src="../js/app.js"></script>
+<script>
+/* ===================== AUDIO (synthétisé, aucun fichier requis) ===================== */
+let ACTX = null;
+function audioCtx() { if (!ACTX) ACTX = new (window.AudioContext || window.webkitAudioContext)(); return ACTX; }
+function playWhoosh() {
+  try {
+    const ctx = audioCtx();
+    const osc = ctx.createOscillator(), gain = ctx.createGain();
+    osc.type = "sawtooth";
+    osc.frequency.setValueAtTime(680, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(90, ctx.currentTime + 0.45);
+    gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.18, ctx.currentTime + 0.05);
+    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.5);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start(); osc.stop(ctx.currentTime + 0.5);
+  } catch (e) {}
+}
+function playTick() {
+  try {
+    const ctx = audioCtx();
+    const osc = ctx.createOscillator(), gain = ctx.createGain();
+    osc.type = "sine"; osc.frequency.setValueAtTime(1200, ctx.currentTime);
+    gain.gain.setValueAtTime(0.05, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.08);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start(); osc.stop(ctx.currentTime + 0.08);
+  } catch (e) {}
+}
+
+/* ===================== PARTICULES — braises ===================== */
+function initEmbers() {
+  const canvas = document.getElementById("emberCanvas");
+  const ctx = canvas.getContext("2d");
+  let W, H;
+  function resize() { W = canvas.width = window.innerWidth; H = canvas.height = window.innerHeight; }
+  resize(); window.addEventListener("resize", resize);
+
+  const COLORS = ["255,120,40", "255,206,0", "208,0,0", "255,180,90"];
+  const particles = Array.from({ length: 90 }, () => spawn());
+  function spawn(atBottom) {
+    return {
+      x: Math.random() * (W || window.innerWidth),
+      y: atBottom === false ? Math.random() * (H || window.innerHeight) : (H || window.innerHeight) + Math.random() * 60,
+      r: 1 + Math.random() * 2.4,
+      vy: 0.3 + Math.random() * 0.9,
+      vx: (Math.random() - 0.5) * 0.4,
+      drift: Math.random() * Math.PI * 2,
+      color: COLORS[Math.floor(Math.random() * COLORS.length)],
+      life: 0, maxLife: 400 + Math.random() * 400
+    };
+  }
+  particles.forEach(p => { p.y = Math.random() * (H || window.innerHeight); });
+
+  function tick() {
+    ctx.clearRect(0, 0, W, H);
+    particles.forEach(p => {
+      p.drift += 0.02;
+      p.x += p.vx + Math.sin(p.drift) * 0.3;
+      p.y -= p.vy;
+      p.life++;
+      const fade = 1 - p.life / p.maxLife;
+      if (p.y < -10 || fade <= 0) Object.assign(p, spawn(true), { life: 0 });
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(${p.color}, ${Math.max(0, fade * 0.85)})`;
+      ctx.shadowBlur = 6; ctx.shadowColor = `rgba(${p.color},.8)`;
+      ctx.fill();
+    });
+    requestAnimationFrame(tick);
+  }
+  tick();
+}
+
+/* ===================== HORLOGE ===================== */
+function tickClock() {
+  const d = new Date();
+  document.getElementById("clockTime").textContent = d.toLocaleTimeString("fr-FR");
+  document.getElementById("clockDate").textContent = d.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+}
+
+/* ===================== COMPTEURS ANIMÉS ===================== */
+function animateCount(el, target, duration = 1100, prefix = "", suffix = "") {
+  const start = 0; const t0 = performance.now();
+  function step(t) {
+    const p = Math.min(1, (t - t0) / duration);
+    const eased = 1 - Math.pow(1 - p, 3);
+    const val = Math.round(start + (target - start) * eased);
+    el.textContent = prefix + val.toLocaleString("fr-FR") + suffix;
+    if (p < 1) requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+}
+
+/* ===================== DONNÉES ===================== */
+async function getSemaineActiveTV() {
+  const snap = await db.ref("semaines").once("value");
+  const list = entries(snap.val()).map(([id, s]) => ({ id, ...s }));
+  list.sort((a, b) => (b.debut || b.createdAt || 0) - (a.debut || a.createdAt || 0));
+  return list.find(s => s.bloquee !== true) || list[0] || null;
+}
+
+async function buildSlideClassement() {
+  const week = await getSemaineActiveTV();
+  const [snapM, snapA] = await Promise.all([
+    db.ref("membres").once("value"),
+    week ? db.ref("actions/" + week.id).once("value") : Promise.resolve({ val: () => null })
+  ]);
+  const membres = entries(snapM.val()).map(([id, m]) => ({ id, ...m })).filter(m => m.actif !== false);
+  const actions = entries(snapA.val()).map(([, a]) => a);
+  const tally = {};
+  actions.forEach(a => {
+    if (a.resultat !== "Réussite") return;
+    const key = a.membre_id;
+    if (!tally[key]) tally[key] = { count: 0, gains: 0 };
+    tally[key].count += Number(a.quantite || 1);
+    tally[key].gains += Number(a.argent_sale || 0) + Number(a.argent_propre || 0);
+  });
+  const rows = membres.map(m => ({ nom: m.prenom + (m.nom ? " " + m.nom[0] + "." : ""), ...(tally[m.id] || { count: 0, gains: 0 }) }))
+    .sort((a, b) => b.gains - a.gains).slice(0, 8);
+  const maxGain = Math.max(1, ...rows.map(r => r.gains));
+
+  const wrap = document.createElement("div");
+  wrap.innerHTML = `<div class="slide-eyebrow">${week ? week.nom : "Aucune semaine active"}</div>
+    <div class="slide-title glitch">🏆 Classement de la semaine</div>
+    <div id="lbRows"></div>`;
+  const rowsEl = wrap.querySelector("#lbRows");
+  rows.forEach((r, i) => {
+    const row = document.createElement("div");
+    row.className = "lb-row";
+    row.innerHTML = `<div class="lb-rank ${i === 0 ? 'top1' : i === 1 ? 'top2' : i === 2 ? 'top3' : ''}">${i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : (i + 1)}</div>
+      <div class="lb-name">${r.nom}</div>
+      <div class="lb-bar-wrap"><div class="lb-bar" data-w="${Math.round(r.gains / maxGain * 100)}"></div></div>
+      <div class="lb-num" data-target="${r.gains}">0 $</div>`;
+    rowsEl.appendChild(row);
+  });
+  if (!rows.length) rowsEl.innerHTML = '<p class="muted">Aucune action enregistrée cette semaine.</p>';
+  return { el: wrap, animate: () => {
+    wrap.querySelectorAll(".lb-bar").forEach(b => requestAnimationFrame(() => b.style.width = b.dataset.w + "%"));
+    wrap.querySelectorAll(".lb-num").forEach(n => animateCount(n, Number(n.dataset.target), 1200, "", " $"));
+  }};
+}
+
+async function buildSlideStock() {
+  const snap = await db.ref("stock").once("value");
+  const cats = entries(snap.val()).map(([id, c]) => ({ id, ...c })).filter(c => c.nom !== "Labo");
+  const wrap = document.createElement("div");
+  wrap.innerHTML = `<div class="slide-eyebrow">Inventaire en direct</div>
+    <div class="slide-title glitch">📦 Arsenal &amp; réserves</div>
+    <div class="stock-grid" id="stockGrid"></div>`;
+  const grid = wrap.querySelector("#stockGrid");
+  cats.slice(0, 6).forEach(c => {
+    const produits = entries(c.produits).slice(0, 5);
+    const card = document.createElement("div");
+    card.className = "stock-card";
+    card.innerHTML = `<h3>${c.emoji || "📦"} ${c.nom}</h3>` + (produits.length ? produits.map(([pid, p]) => {
+      const seuil = Number(p.seuil) || 1;
+      const stock = Number(p.stock) || 0;
+      const pct = Math.min(100, Math.round(stock / (seuil * 2) * 100));
+      const low = stock <= seuil;
+      return `<div class="stock-item ${low ? 'low' : ''}"><div class="nom">${p.nom}</div>
+        <div class="bar-wrap"><div class="bar" data-w="${pct}"></div></div>
+        <div class="val">${stock}</div></div>`;
+    }).join("") : '<p class="muted small">Vide</p>');
+    grid.appendChild(card);
+  });
+  if (!cats.length) grid.innerHTML = '<p class="muted">Aucune catégorie de stock.</p>';
+  return { el: wrap, animate: () => wrap.querySelectorAll(".stock-item .bar").forEach(b => requestAnimationFrame(() => b.style.width = b.dataset.w + "%")) };
+}
+
+async function buildSlideResume() {
+  const week = await getSemaineActiveTV();
+  const snapA = week ? await db.ref("actions/" + week.id).once("value") : { val: () => null };
+  const actions = entries(snapA.val()).map(([, a]) => a);
+  const reussites = actions.filter(a => a.resultat === "Réussite");
+  const gainsSale = reussites.reduce((s, a) => s + Number(a.argent_sale || 0), 0);
+  const gainsPropre = reussites.reduce((s, a) => s + Number(a.argent_propre || 0), 0);
+  const parMembre = {};
+  reussites.forEach(a => { parMembre[a.prenom_membre] = (parMembre[a.prenom_membre] || 0) + 1; });
+  const podium = Object.entries(parMembre).sort((a, b) => b[1] - a[1]).slice(0, 3);
+
+  const wrap = document.createElement("div");
+  wrap.innerHTML = `<div class="slide-eyebrow">${week ? week.nom : "—"}</div>
+    <div class="slide-title glitch">📋 Bilan de la semaine</div>
+    <div class="kpi-row">
+      <div class="kpi"><div class="lbl">Actions réussies</div><div class="num" data-target="${reussites.length}">0</div></div>
+      <div class="kpi"><div class="lbl">Gains sale</div><div class="num small" data-target="${gainsSale}" data-suffix=" $">0 $</div></div>
+      <div class="kpi"><div class="lbl">Gains propre</div><div class="num small" data-target="${gainsPropre}" data-suffix=" $">0 $</div></div>
+    </div>
+    <div class="mini-podium" id="miniPodium"></div>`;
+  const pod = wrap.querySelector("#miniPodium");
+  const medals = ["🥇", "🥈", "🥉"]; const order = [1, 0, 2];
+  order.filter(i => podium[i]).forEach(i => {
+    const [nom, n] = podium[i];
+    const div = document.createElement("div");
+    div.className = "p p" + (i + 1);
+    div.innerHTML = `<div class="medal">${medals[i]}</div><div class="nom">${nom}</div><div class="n">${n} action(s)</div>`;
+    pod.appendChild(div);
+  });
+  if (!podium.length) pod.innerHTML = '<p class="muted">Pas encore d\'action cette semaine.</p>';
+
+  return { el: wrap, animate: () => wrap.querySelectorAll(".num").forEach(n => animateCount(n, Number(n.dataset.target), 1200, "", n.dataset.suffix || "")) };
+}
+
+/* ===================== ROTATION DES SLIDES ===================== */
+const SLIDE_BUILDERS = [buildSlideClassement, buildSlideStock, buildSlideResume];
+let slideIndex = 0;
+let rotationTimer = null, progressTimer = null;
+const ROTATION_MS = 13000;
+
+async function showSlide(i) {
+  const stage = document.getElementById("stage");
+  const content = document.getElementById("stageContent");
+  stage.classList.add("flip-out");
+  playWhoosh();
+  setTimeout(async () => {
+    const { el, animate } = await SLIDE_BUILDERS[i]().catch(() => ({ el: document.createElement("div"), animate: () => {} }));
+    content.innerHTML = "";
+    content.appendChild(el);
+    stage.classList.remove("flip-out");
+    stage.classList.add("flip-in");
+    requestAnimationFrame(() => animate());
+  }, 480);
+}
+
+function startProgress() {
+  const bar = document.getElementById("progressBar");
+  bar.style.transition = "none"; bar.style.width = "0%";
+  requestAnimationFrame(() => {
+    bar.style.transition = `width ${ROTATION_MS}ms linear`;
+    bar.style.width = "100%";
+  });
+}
+
+function startRotation() {
+  showSlide(slideIndex); startProgress();
+  rotationTimer = setInterval(() => {
+    slideIndex = (slideIndex + 1) % SLIDE_BUILDERS.length;
+    showSlide(slideIndex); startProgress();
+  }, ROTATION_MS);
+}
+
+/* ===================== BOOT ===================== */
+document.getElementById("startBtn").addEventListener("click", async function start() {
+  audioCtx(); playTick();
+  try { await document.documentElement.requestFullscreen(); } catch (e) {}
+  document.getElementById("startGate").style.display = "none";
+  document.getElementById("tvRoot").style.display = "block";
+  initEmbers();
+  tickClock(); setInterval(tickClock, 1000);
+  startRotation();
+});
+
+(async function () {
+  await authReady;
+  const session = requireSession();
+  if (!session) return;
+})();
+</script>
+</body>
+</html>

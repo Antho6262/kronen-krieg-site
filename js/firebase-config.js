@@ -42,6 +42,7 @@ const PAGES_DISPO = [
   { page: "transactions",  label: "Transactions" },
   { page: "taxes",         label: "Taxes" },
   { page: "admin",         label: "Admin" },
+  { page: "tv",            label: "Mode TV" },
   { page: "profil",        label: "Profil" }
 ];
 
