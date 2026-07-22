@@ -111,6 +111,7 @@ async function ajouterTaxe() {
   await db.ref(`argent/${typeArgent}/${id}`).set({ date, description: "Taxe " + taxeNom + " — " + groupe, type: "Sortie", montant, responsable: m.prenom || SESSION.prenom, createdAt });
 
   toast(`Taxe enregistrée. Code à donner : ${code}`);
+  logAudit("Taxe payée", `${groupe} — ${taxeNom} — ${formatMoney(montant)}`);
   document.getElementById("xGroupe").value = ""; document.getElementById("xMontant").value = ""; document.getElementById("xCode").value = "";
   chargerTaxes();
 }
@@ -139,6 +140,7 @@ async function supprimerTaxe(id) {
   if (t) await db.ref(`argent/${t.type_argent}/${id}`).remove();
   await db.ref("taxes/" + id).remove();
   toast("Taxe supprimée, rollback effectué.");
+  logAudit("Taxe supprimée", t ? `${t.groupe} — ${formatMoney(t.montant)}` : id);
   chargerTaxes();
 }
 

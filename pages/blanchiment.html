@@ -60,6 +60,7 @@ async function blanchir() {
   await db.ref("argent/propre/" + uid()).set({ date, description: desc + " (blanchi)", type: "Entrée", montant: propre, responsable: SESSION.prenom, createdAt: Date.now() });
 
   toast("Blanchiment effectué : " + formatMoney(propre) + " récupérés.");
+  logAudit("Blanchiment effectué", `${formatMoney(montant)} → ${formatMoney(propre)} propre (${desc})`);
   document.getElementById("bDesc").value = ""; document.getElementById("bMontant").value = ""; calcApercu();
   chargerHisto();
 }
@@ -72,6 +73,7 @@ async function supprimerBlanchiment(id, montantSale, montantPropre, desc, date) 
   entries(snapSale.val()).forEach(([k, l]) => { if (l.montant === montantSale && l.date === date) db.ref("argent/sale/" + k).remove(); });
   entries(snapPropre.val()).forEach(([k, l]) => { if (l.montant === montantPropre && l.date === date) db.ref("argent/propre/" + k).remove(); });
   toast("Blanchiment annulé.");
+  logAudit("Blanchiment annulé", `${formatMoney(montantSale)} (${desc})`);
   chargerHisto();
 }
 

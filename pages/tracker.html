@@ -249,6 +249,8 @@ async function ajouterAction() {
   }
 
   toast("Action enregistrée.");
+  logAudit("Action ajoutée", `${m.prenom} — ${act.nom} x${qte} (${resultat})`);
+  if (resultat === "Réussite") verifierQuotaEtAlerter(membreId);
   await renderTable();
   await chargerListes();
 }
@@ -350,14 +352,18 @@ async function modifierAction(id) {
 
   await db.ref("actions/" + ACTIVE_WEEK.id + "/" + id).update(update);
   toast("Action modifiée, stock ajusté.");
+  logAudit("Action modifiée", `${a.prenom_membre} — ${update.action || a.action}`);
+  if (update.resultat === "Réussite") verifierQuotaEtAlerter(a.membre_id);
   await chargerListes();
   await renderTable();
 }
 
 async function supprimerAction(id) {
   if (!confirm("Supprimer cette action ? Le stock déjà déduit ne sera pas restauré automatiquement.")) return;
+  const a = ALL_ACTIONS.find(x => x.id === id);
   await db.ref("actions/" + ACTIVE_WEEK.id + "/" + id).remove();
   toast("Action supprimée.");
+  logAudit("Action supprimée", a ? `${a.prenom_membre} — ${a.action}` : id);
   renderTable();
 }
 

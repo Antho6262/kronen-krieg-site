@@ -117,6 +117,7 @@ async function verrouillerSemaineAuto(id, nom) {
     }
   } catch (e) { console.error("verrouillerSemaineAuto", e); }
 
+  await majStatsEtBadges(id);
   const semSnap = await db.ref("semaines/" + id).once("value");
   await creerSemaineSuivante({ id, ...semSnap.val() });
 }
@@ -198,5 +199,228 @@ async function initShell(activePage, pageTitle) {
     </div>
   `;
   document.getElementById("shell").outerHTML = shellHtml;
+  injectGlobalSearch();
   return session;
+}
+
+/* ============================================================
+   ALERTE DISCORD — QUOTA ATTEINT
+   Appelée après l'enregistrement d'une action réussie (tracker.html).
+   Envoie une alerte une seule fois par semaine et par quota franchi
+   (global ou par catégorie de produit variable), via
+   config/discord_webhook_quota.
+   ============================================================ */
+async function envoyerWebhookQuota(texte) {
+  try {
+    const snap = await db.ref("config/discord_webhook_quota").once("value");
+    const webhook = snap.val();
+    if (!webhook) return;
+    await fetch(webhook, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content: texte }) });
+  } catch (e) { /* webhook injoignable, on ignore */ }
+}
+async function verifierQuotaEtAlerter(membreId) {
+  try {
+    const snapW = await db.ref("semaines").once("value");
+    const list = entries(snapW.val()).map(([id, s]) => ({ id, ...s })).sort((a, b) => (b.debut || b.createdAt || 0) - (a.debut || a.createdAt || 0));
+    const week = list.find(s => s.bloquee !== true);
+    if (!week) return;
+
+    const [snapM, snapA, snapQC, snapStock] = await Promise.all([
+      db.ref("membres/" + membreId).once("value"),
+      db.ref("actions/" + week.id).once("value"),
+      db.ref("quotas_categorie/" + membreId).once("value"),
+      db.ref("stock").once("value")
+    ]);
+    const membre = snapM.val();
+    if (!membre) return;
+    const actionsMembre = entries(snapA.val()).map(([, a]) => a).filter(a => a.membre_id === membreId && a.resultat === "Réussite");
+
+    const quotaGlobal = Number(membre.quota) || 0;
+    if (quotaGlobal > 0) {
+      const fait = actionsMembre.filter(a => !a.produit_drogue_id).reduce((acc, a) => acc + Number(a.quantite || 1), 0);
+      if (fait >= quotaGlobal) {
+        const alertRef = db.ref(`semaines/${week.id}/quota_alertes/${membreId}/global`);
+        if (!(await alertRef.once("value")).val()) {
+          await alertRef.set(true);
+          await envoyerWebhookQuota(`🎯 **${membre.prenom}** a atteint son quota global (${fait}/${quotaGlobal}) — ${week.nom}`);
+        }
+      }
+    }
+
+    const quotasCat = snapQC.val() || {};
+    const stock = snapStock.val() || {};
+    for (const [catId, q] of Object.entries(quotasCat)) {
+      const quota = Number(q) || 0;
+      if (quota <= 0) continue;
+      const cat = stock[catId];
+      if (!cat) continue;
+      const produitIds = new Set(Object.keys(cat.produits || {}));
+      const fait = actionsMembre.filter(a => produitIds.has(a.produit_drogue_id)).reduce((acc, a) => acc + Number(a.quantite || 1), 0);
+      if (fait >= quota) {
+        const alertRef = db.ref(`semaines/${week.id}/quota_alertes/${membreId}/${catId}`);
+        if (!(await alertRef.once("value")).val()) {
+          await alertRef.set(true);
+          await envoyerWebhookQuota(`🎯 **${membre.prenom}** a atteint son quota ${cat.nom} (${fait}/${quota}) — ${week.nom}`);
+        }
+      }
+    }
+  } catch (e) { console.error("verifierQuotaEtAlerter", e); }
+}
+
+/* ============================================================
+   BADGES & RECORDS
+   stats_membres/{id} = { total_actions, semaines_gagnees, streak_actuel, badges:{badgeId:timestamp} }
+   Mis à jour à chaque verrouillage de semaine (auto ou manuel).
+   ============================================================ */
+const BADGES_DEFS = [
+  { id: "actions_50",  seuil: 50,  type: "total_actions", label: "🔧 50 actions" },
+  { id: "actions_100", seuil: 100, type: "total_actions", label: "💯 100 actions" },
+  { id: "actions_250", seuil: 250, type: "total_actions", label: "⚡ 250 actions" },
+  { id: "actions_500", seuil: 500, type: "total_actions", label: "🏭 500 actions" },
+  { id: "streak_2",    seuil: 2,   type: "streak",        label: "🔥 2 semaines de suite en tête" },
+  { id: "streak_3",    seuil: 3,   type: "streak",        label: "🔥🔥 3 semaines de suite en tête" },
+  { id: "streak_5",    seuil: 5,   type: "streak",        label: "👑 5 semaines de suite en tête" }
+];
+async function majStatsEtBadges(weekId) {
+  try {
+    const snapA = await db.ref("actions/" + weekId).once("value");
+    const actions = entries(snapA.val()).map(([, a]) => a).filter(a => a.resultat === "Réussite");
+    if (!actions.length) return;
+
+    const parMembre = {};
+    actions.forEach(a => {
+      if (!parMembre[a.membre_id]) parMembre[a.membre_id] = { count: 0, prenom: a.prenom_membre };
+      parMembre[a.membre_id].count += Number(a.quantite || 1);
+    });
+    const classement = Object.entries(parMembre).sort((a, b) => b[1].count - a[1].count);
+    const gagnantId = classement[0][0];
+
+    const cfgSnap = await db.ref("config/dernier_gagnant_semaine").once("value");
+    const dernierGagnant = cfgSnap.val();
+    const webhookSnap = await db.ref("config/discord_webhook_quota").once("value");
+    const webhook = webhookSnap.val();
+
+    for (const [membreId, data] of classement) {
+      const statsRef = db.ref("stats_membres/" + membreId);
+      const stats = (await statsRef.once("value")).val() || { total_actions: 0, semaines_gagnees: 0, streak_actuel: 0, badges: {} };
+      stats.badges = stats.badges || {};
+      stats.total_actions = (stats.total_actions || 0) + data.count;
+
+      if (membreId === gagnantId) {
+        stats.semaines_gagnees = (stats.semaines_gagnees || 0) + 1;
+        stats.streak_actuel = (dernierGagnant === gagnantId) ? (stats.streak_actuel || 0) + 1 : 1;
+      } else if (dernierGagnant === membreId) {
+        stats.streak_actuel = 0;
+      }
+
+      const nouveaux = BADGES_DEFS.filter(b => {
+        const valeur = b.type === "total_actions" ? stats.total_actions : (membreId === gagnantId ? stats.streak_actuel : -1);
+        return valeur >= b.seuil && !stats.badges[b.id];
+      });
+      nouveaux.forEach(b => { stats.badges[b.id] = Date.now(); });
+
+      await statsRef.set(stats);
+
+      if (nouveaux.length && webhook) {
+        for (const b of nouveaux) {
+          try { await fetch(webhook, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content: `🏅 **${data.prenom}** a débloqué le badge : ${b.label} !` }) }); }
+          catch (e) {}
+        }
+      }
+    }
+    await db.ref("config/dernier_gagnant_semaine").set(gagnantId);
+  } catch (e) { console.error("majStatsEtBadges", e); }
+}
+
+/* ============================================================
+   JOURNAL D'AUDIT — qui a fait quoi
+   audit/{id} = { action, details, membre, membre_id, createdAt }
+   ============================================================ */
+async function logAudit(action, details) {
+  try {
+    const s = getSession();
+    await db.ref("audit/" + uid()).set({
+      action, details: details || "",
+      membre: s ? (s.prenom + (s.nom ? " " + s.nom : "")) : "?",
+      membre_id: s ? s.id : null,
+      createdAt: Date.now()
+    });
+  } catch (e) { console.error("logAudit", e); }
+}
+
+/* ============================================================
+   RECHERCHE GLOBALE (Ctrl+F) — membres, actions récentes, taxes
+   ============================================================ */
+function injectGlobalSearch() {
+  if (document.getElementById("globalSearchModal")) return;
+  const style = document.createElement("style");
+  style.textContent = `
+    #globalSearchModal{display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.7);align-items:flex-start;justify-content:center;padding-top:10vh;}
+    #globalSearchBox{background:var(--bg-1);border:1px solid var(--line);border-radius:10px;width:min(600px,90vw);max-height:70vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.6);}
+    #globalSearchInput{width:100%;box-sizing:border-box;padding:16px;font-size:16px;background:var(--bg-2);border:none;border-bottom:1px solid var(--line);color:var(--text);outline:none;}
+    .gs-eyebrow{padding:8px 14px;font-size:11px;letter-spacing:.1em;color:var(--text-dim);text-transform:uppercase;}
+    .gs-row{padding:10px 14px;cursor:pointer;border-radius:6px;margin:0 6px;}
+    .gs-row:hover{background:var(--bg-2);}
+  `;
+  document.head.appendChild(style);
+  const modal = document.createElement("div");
+  modal.id = "globalSearchModal";
+  modal.innerHTML = `<div id="globalSearchBox">
+    <input id="globalSearchInput" type="text" placeholder="Rechercher un membre, une action, une taxe… (Échap pour fermer)">
+    <div id="globalSearchResults" style="padding:6px;"></div>
+  </div>`;
+  document.body.appendChild(modal);
+  modal.querySelector("#globalSearchInput").addEventListener("input", (e) => runGlobalSearch(e.target.value.trim()));
+  modal.addEventListener("click", (e) => { if (e.target === modal) closeGlobalSearch(); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && modal.style.display !== "none") closeGlobalSearch(); });
+  document.addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && (e.key === "f" || e.key === "F")) { e.preventDefault(); openGlobalSearch(); }
+  });
+}
+function openGlobalSearch() {
+  const modal = document.getElementById("globalSearchModal");
+  if (!modal) return;
+  modal.style.display = "flex";
+  const input = document.getElementById("globalSearchInput");
+  input.value = ""; document.getElementById("globalSearchResults").innerHTML = "";
+  setTimeout(() => input.focus(), 30);
+}
+function closeGlobalSearch() {
+  const modal = document.getElementById("globalSearchModal");
+  if (modal) modal.style.display = "none";
+}
+async function runGlobalSearch(q) {
+  const results = document.getElementById("globalSearchResults");
+  if (!q || q.length < 2) { results.innerHTML = '<p class="muted small" style="padding:10px;">Tape au moins 2 caractères…</p>'; return; }
+  results.innerHTML = '<p class="muted small" style="padding:10px;">Recherche…</p>';
+  const qLower = q.toLowerCase();
+  const [snapM, snapT, snapS] = await Promise.all([
+    db.ref("membres").once("value"), db.ref("taxes").once("value"), db.ref("semaines").once("value")
+  ]);
+  const membres = entries(snapM.val()).map(([id, m]) => ({ id, ...m }))
+    .filter(m => (m.prenom + " " + (m.nom || "")).toLowerCase().includes(qLower));
+  const taxes = entries(snapT.val()).map(([id, t]) => ({ id, ...t }))
+    .filter(t => (t.groupe || "").toLowerCase().includes(qLower) || (t.code || "").toLowerCase().includes(qLower));
+  const semaines = entries(snapS.val()).map(([id, s]) => ({ id, ...s })).sort((a, b) => (b.debut || 0) - (a.debut || 0));
+
+  const actionsMatch = [];
+  for (const s of semaines.slice(0, 6)) {
+    const snapA = await db.ref("actions/" + s.id).once("value");
+    entries(snapA.val()).forEach(([id, a]) => {
+      if ((a.prenom_membre || "").toLowerCase().includes(qLower) || (a.action || "").toLowerCase().includes(qLower)) {
+        actionsMatch.push({ id, semaineNom: s.nom, ...a });
+      }
+    });
+    if (actionsMatch.length > 15) break;
+  }
+
+  const root = pathToRoot() + "pages/";
+  let html = "";
+  if (membres.length) html += `<div class="gs-eyebrow">Membres</div>` + membres.slice(0, 8)
+    .map(m => `<div class="gs-row" onclick="location.href='${root}admin.html'">👤 ${m.prenom} ${m.nom || ""} <span class="small muted">— ${m.grade || ""}</span></div>`).join("");
+  if (actionsMatch.length) html += `<div class="gs-eyebrow">Actions</div>` + actionsMatch.slice(0, 8)
+    .map(a => `<div class="gs-row" onclick="location.href='${root}tracker.html'">📋 ${a.prenom_membre} — ${a.action} <span class="small muted">(${a.semaineNom})</span></div>`).join("");
+  if (taxes.length) html += `<div class="gs-eyebrow">Taxes</div>` + taxes.slice(0, 8)
+    .map(t => `<div class="gs-row" onclick="location.href='${root}taxes.html'">🧾 ${t.groupe} <span class="small muted">— ${formatMoney(t.montant)}</span></div>`).join("");
+  results.innerHTML = html || '<p class="muted small" style="padding:10px;">Aucun résultat.</p>';
 }

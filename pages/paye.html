@@ -158,6 +158,7 @@ async function payer(membreId, prenom, montantBase) {
   }
 
   toast("Paiement enregistré.");
+  logAudit("Paiement effectué", `${prenom} — ${formatMoney(montant)} (${typeArgent})`);
   chargerPaye();
 }
 

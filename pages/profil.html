@@ -44,6 +44,16 @@ function renderContent() {
         </div>
       </div>
     </div>
+
+    <div class="panel mt16">
+      <div class="panel-head"><h2>🏅 Badges &amp; records</h2></div>
+      <div class="grid cols-3 mt8">
+        <div><div class="stat-num" id="statTotalActions">0</div><div class="stat-sub">actions cumulées (tout temps)</div></div>
+        <div><div class="stat-num gold" id="statSemainesGagnees">0</div><div class="stat-sub">semaines terminées en tête</div></div>
+        <div><div class="stat-num" id="statStreak">0</div><div class="stat-sub">série en tête actuelle</div></div>
+      </div>
+      <div id="mesBadges" class="mt16" style="display:flex; flex-wrap:wrap; gap:10px;"></div>
+    </div>
   `;
 }
 
@@ -64,11 +74,24 @@ async function getActiveWeek() {
 
 async function chargerMesStats() {
   const week = await getActiveWeek();
-  if (!week) return;
-  const snap = await db.ref("actions/" + week.id).once("value");
-  const actions = entries(snap.val()).map(([id, a]) => a).filter(a => a.membre_id === SESSION.id);
-  document.getElementById("mesActions").textContent = actions.length;
-  document.getElementById("mesGains").textContent = formatMoney(actions.reduce((acc, a) => acc + Number(a.gains_totaux || 0), 0));
+  if (week) {
+    const snap = await db.ref("actions/" + week.id).once("value");
+    const actions = entries(snap.val()).map(([id, a]) => a).filter(a => a.membre_id === SESSION.id);
+    document.getElementById("mesActions").textContent = actions.length;
+    document.getElementById("mesGains").textContent = formatMoney(actions.reduce((acc, a) => acc + Number(a.gains_totaux || 0), 0));
+  }
+
+  const snapStats = await db.ref("stats_membres/" + SESSION.id).once("value");
+  const stats = snapStats.val() || { total_actions: 0, semaines_gagnees: 0, streak_actuel: 0, badges: {} };
+  document.getElementById("statTotalActions").textContent = stats.total_actions || 0;
+  document.getElementById("statSemainesGagnees").textContent = stats.semaines_gagnees || 0;
+  document.getElementById("statStreak").textContent = stats.streak_actuel || 0;
+
+  const badgesObtenus = BADGES_DEFS.filter(b => (stats.badges || {})[b.id]);
+  const wrap = document.getElementById("mesBadges");
+  wrap.innerHTML = badgesObtenus.length
+    ? badgesObtenus.map(b => `<span class="badge badge-steel" style="font-size:13px; padding:8px 14px;">${b.label}</span>`).join("")
+    : '<p class="muted small">Aucun badge débloqué pour le moment — continue à enchaîner les actions !</p>';
 }
 
 (async function () {

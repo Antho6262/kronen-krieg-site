@@ -16,8 +16,8 @@
 <script src="../js/app.js"></script>
 <script>
 let SESSION;
-const TABS = ["semaines", "membres", "stock", "actions", "quotas", "grades", "visibilite", "permissions", "config"];
-const TAB_LABELS = { visibilite: "Visibilité" };
+const TABS = ["semaines", "membres", "stock", "actions", "quotas", "grades", "visibilite", "permissions", "config", "audit"];
+const TAB_LABELS = { visibilite: "Visibilité", audit: "Audit" };
 let currentTab = "semaines";
 
 function renderContent() {
@@ -46,6 +46,7 @@ async function loadTab(t) {
   if (t === "visibilite") return tabVisibilite(body);
   if (t === "permissions") return tabPermissions(body);
   if (t === "config") return tabConfig(body);
+  if (t === "audit") return tabAudit(body);
 }
 
 /* ===================== SEMAINES ===================== */
@@ -105,17 +106,20 @@ async function creerSemaine() {
     debut: bounds.debut, fin: bounds.fin, verrouAt: bounds.verrouAt
   });
   await idxRef.set(id);
+  logAudit("Semaine créée", nom);
   toast("Semaine créée.");
   loadTab("semaines");
 }
 async function toggleSemaine(id, bloquee) {
   await db.ref("semaines/" + id).update({ bloquee, closedAt: bloquee ? Date.now() : null });
+  logAudit(bloquee ? "Semaine bloquée manuellement" : "Semaine débloquée", id);
   loadTab("semaines");
 }
 async function suppSemaine(id) {
   if (!confirm("Supprimer cette semaine et toutes ses actions ?")) return;
   await db.ref("semaines/" + id).remove();
   await db.ref("actions/" + id).remove();
+  logAudit("Semaine supprimée", id);
   loadTab("semaines");
 }
 /* Blocage manuel : verrouille la semaine, affiche le résumé, ET ouvre
@@ -153,6 +157,8 @@ async function bloquerSemaine(id, nom) {
   }
 
   // Ouvre immédiatement la semaine suivante (7 jours après le verrouillage prévu de celle-ci).
+  await majStatsEtBadges(id);
+  logAudit("Semaine bloquée", nom);
   const semSnap = await db.ref("semaines/" + id).once("value");
   const semaineBloquee = { id, ...semSnap.val() };
   await creerSemaineSuivante(semaineBloquee);
@@ -226,6 +232,7 @@ async function modifierMembre(id) {
     grade: document.getElementById("mEdGrade_" + id).value,
     quota: Number(document.getElementById("mEdQuota_" + id).value) || 0
   });
+  logAudit("Membre modifié", prenom);
   toast("Membre mis à jour.");
   loadTab("membres");
 }
@@ -235,6 +242,7 @@ async function changerPassMembre(id, prenom, requestId) {
   if (val.trim().length < 4) { toast("Mot de passe trop court.", true); return; }
   await db.ref("membres/" + id + "/mot_de_passe").set(val.trim());
   if (requestId) await db.ref("reset_requests/" + requestId).remove();
+  logAudit("Mot de passe changé", "pour " + prenom);
   toast("Mot de passe mis à jour.");
   if (requestId) loadTab("membres");
 }
@@ -245,6 +253,7 @@ async function ignorerDemande(reqId) {
 async function toggleAdmin(id, makeAdmin) {
   if (!confirm(makeAdmin ? "Donner le rôle admin à ce membre ?" : "Retirer le rôle admin à ce membre ?")) return;
   await db.ref("membres/" + id + "/role").set(makeAdmin ? "admin" : "membre");
+  logAudit(makeAdmin ? "Rôle admin donné" : "Rôle admin retiré", "id: " + id);
   toast("Rôle mis à jour.");
   loadTab("membres");
 }
@@ -257,11 +266,12 @@ async function ajouterMembre() {
     grade: document.getElementById("mGrade").value, role: document.getElementById("mRole").value,
     mot_de_passe: pass, actif: true, quota: Number(document.getElementById("mQuota").value) || 0
   });
+  logAudit("Membre ajouté", prenom);
   toast("Membre ajouté.");
   loadTab("membres");
 }
-async function toggleActif(id, val) { await db.ref("membres/" + id + "/actif").set(val); loadTab("membres"); }
-async function suppMembre(id) { if (confirm("Supprimer ce membre ?")) { await db.ref("membres/" + id).remove(); loadTab("membres"); } }
+async function toggleActif(id, val) { await db.ref("membres/" + id + "/actif").set(val); logAudit(val ? "Membre réactivé" : "Membre désactivé", id); loadTab("membres"); }
+async function suppMembre(id) { if (confirm("Supprimer ce membre ?")) { await db.ref("membres/" + id).remove(); logAudit("Membre supprimé", id); loadTab("membres"); } }
 
 /* ===================== STOCK ===================== */
 async function tabStock(body) {
@@ -341,10 +351,11 @@ async function creerCategorie() {
   const nom = document.getElementById("catNom").value.trim();
   if (!nom) { toast("Nom requis.", true); return; }
   await db.ref("stock/" + uid()).set({ nom, emoji: document.getElementById("catEmoji").value.trim() || "📦", produits: {} });
+  logAudit("Catégorie de stock créée", nom);
   toast("Catégorie créée.");
   loadTab("stock");
 }
-async function suppCategorie(id) { if (confirm("Supprimer cette catégorie et tous ses produits ?")) { await db.ref("stock/" + id).remove(); loadTab("stock"); } }
+async function suppCategorie(id) { if (confirm("Supprimer cette catégorie et tous ses produits ?")) { await db.ref("stock/" + id).remove(); logAudit("Catégorie de stock supprimée", id); loadTab("stock"); } }
 async function ajouterProduit(catId) {
   const nom = document.getElementById("pNom_" + catId).value.trim();
   if (!nom) { toast("Nom du produit requis.", true); return; }
@@ -354,6 +365,7 @@ async function ajouterProduit(catId) {
     stock: Number(document.getElementById("pStock_" + catId).value) || 0,
     seuil: Number(document.getElementById("pSeuil_" + catId).value) || 0
   });
+  logAudit("Produit ajouté", nom);
   toast("Produit ajouté.");
   loadTab("stock");
 }
@@ -366,10 +378,11 @@ async function modifierProduit(catId, pid) {
     stock: Number(document.getElementById(`edStock_${catId}_${pid}`).value) || 0,
     seuil: Number(document.getElementById(`edSeuil_${catId}_${pid}`).value) || 0
   });
+  logAudit("Produit modifié", nom);
   toast("Produit mis à jour.");
   loadTab("stock");
 }
-async function suppProduit(catId, pid) { if (confirm("Supprimer ce produit ?")) { await db.ref("stock/" + catId + "/produits/" + pid).remove(); loadTab("stock"); } }
+async function suppProduit(catId, pid) { if (confirm("Supprimer ce produit ?")) { await db.ref("stock/" + catId + "/produits/" + pid).remove(); logAudit("Produit supprimé", pid); loadTab("stock"); } }
 
 /* ===================== ACTIONS ===================== */
 async function tabActions(body) {
@@ -485,10 +498,11 @@ async function creerAction() {
     cat_variable: document.getElementById("aCatVariable").value || null
   });
   RECIPE_LINES = [];
+  logAudit("Action créée", nom);
   toast("Action créée.");
   loadTab("actions");
 }
-async function suppAction(id) { if (confirm("Supprimer cette action ?")) { await db.ref("actions_dispo/" + id).remove(); loadTab("actions"); } }
+async function suppAction(id) { if (confirm("Supprimer cette action ?")) { await db.ref("actions_dispo/" + id).remove(); logAudit("Action supprimée", id); loadTab("actions"); } }
 
 /* ===================== QUOTAS ===================== */
 async function getActiveWeekAdmin() {
@@ -596,10 +610,11 @@ async function creerGrade() {
   const nom = document.getElementById("gNom").value.trim();
   if (!nom) { toast("Nom requis.", true); return; }
   await db.ref("grades/" + uid()).set({ nom, ordre: Number(document.getElementById("gOrdre").value) || 9 });
+  logAudit("Grade créé", nom);
   toast("Grade créé.");
   loadTab("grades");
 }
-async function suppGrade(id) { if (confirm("Supprimer ce grade ?")) { await db.ref("grades/" + id).remove(); loadTab("grades"); } }
+async function suppGrade(id) { if (confirm("Supprimer ce grade ?")) { await db.ref("grades/" + id).remove(); logAudit("Grade supprimé", id); loadTab("grades"); } }
 
 /* ===================== VISIBILITÉ (grade × page de suivi) ===================== */
 const VISIBILITE_PAGES = [
@@ -636,6 +651,7 @@ async function enregistrerVisibilite() {
   const update = {};
   grades.forEach(g => { update[g] = {}; VISIBILITE_PAGES.forEach(p => { update[g][p.page] = document.getElementById(`visi_${g}_${p.page}`).checked; }); });
   await db.ref("visibilite_grades").update(update);
+  logAudit("Visibilité modifiée");
   toast("Visibilité enregistrée.");
 }
 
@@ -668,6 +684,7 @@ async function enregistrerPermissions() {
   grades.forEach(g => { update[g] = {}; PAGES_DISPO.forEach(p => { update[g][p.page] = document.getElementById(`perm_${g}_${p.page}`).checked; }); });
   await db.ref("permissions").update(update);
   _permsCache = null;
+  logAudit("Permissions modifiées");
   toast("Permissions enregistrées.");
 }
 
@@ -684,6 +701,9 @@ async function tabConfig(body) {
       <div class="row">
         <div><label class="l">Taux de frais blanchiment (%)</label><input type="number" id="cfgTaux" value="${cfg.blanchiment_taux ?? 35}"></div>
         <div><label class="l">Webhook Discord — résumé de semaine (optionnel)</label><input type="text" id="cfgWebhook" value="${cfg.discord_webhook_semaine || ''}" placeholder="https://discord.com/api/webhooks/..."></div>
+      </div>
+      <div class="row mt8">
+        <div><label class="l">Webhook Discord — quotas atteints &amp; badges (optionnel)</label><input type="text" id="cfgWebhookQuota" value="${cfg.discord_webhook_quota || ''}" placeholder="https://discord.com/api/webhooks/..."></div>
       </div>
       <div class="row mt8">
         <div><label class="l">Taux de paye par défaut — Vente de Drogue (%)</label><input type="number" id="cfgTauxPayeDrogue" value="${cfg.taux_paye_drogue ?? 20}"></div>
@@ -738,6 +758,7 @@ async function saveTauxGrades() {
     if (a !== "") update[g].autres = Number(a);
   });
   await db.ref("config/taux_paye_grades").set(update);
+  logAudit("Taux de paye par grade modifiés");
   toast("Taux par grade enregistrés.");
 }
 async function creerEvent() {
@@ -749,11 +770,13 @@ async function creerEvent() {
   if (!debut || !fin) { toast("Remplis début et fin.", true); return; }
   if (new Date(fin) <= new Date(debut)) { toast("La fin doit être après le début.", true); return; }
   await db.ref("events_drogue/" + uid()).set({ debut: new Date(debut).getTime(), fin: new Date(fin).getTime(), taux, taux_actions, nom, createdAt: Date.now() });
+  logAudit("Event créé", nom || "sans nom");
   toast("Event créé.");
   loadTab("config");
 }
 async function supprimerEvent(id) {
   await db.ref("events_drogue/" + id).remove();
+  logAudit("Event supprimé", id);
   loadTab("config");
 }
 async function saveConfig() {
@@ -761,9 +784,28 @@ async function saveConfig() {
     blanchiment_taux: Number(document.getElementById("cfgTaux").value) || 35,
     taux_paye_drogue: Number(document.getElementById("cfgTauxPayeDrogue").value) || 0,
     taux_paye_autres: Number(document.getElementById("cfgTauxPayeAutres").value) || 0,
-    discord_webhook_semaine: document.getElementById("cfgWebhook").value.trim()
+    discord_webhook_semaine: document.getElementById("cfgWebhook").value.trim(),
+    discord_webhook_quota: document.getElementById("cfgWebhookQuota").value.trim()
   });
+  logAudit("Config modifiée", "Paramètres généraux / webhooks");
   toast("Configuration enregistrée.");
+}
+
+/* ===================== AUDIT ===================== */
+async function tabAudit(body) {
+  const snap = await db.ref("audit").limitToLast(200).once("value");
+  const list = entries(snap.val()).map(([id, a]) => ({ id, ...a })).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  body.innerHTML = `
+    <div class="panel">
+      <div class="panel-head"><h2>Journal d'audit — 200 dernières actions</h2></div>
+      <p class="small muted">Trace qui a créé, modifié ou supprimé quoi (membres, semaines, stock, actions, config, permissions...). Les modifications de produits/quotas très fréquentes ne sont pas toutes détaillées pour rester lisible.</p>
+      <table><thead><tr><th>Date</th><th>Membre</th><th>Action</th><th>Détail</th></tr></thead>
+        <tbody>${list.length ? list.map(a => `
+          <tr><td class="small muted" style="white-space:nowrap;">${a.createdAt ? new Date(a.createdAt).toLocaleString('fr-FR') : '-'}</td>
+          <td>${a.membre || '?'}</td><td>${a.action}</td><td class="small muted">${a.details || ''}</td></tr>
+        `).join("") : '<tr class="empty-row"><td colspan="4">Aucune entrée pour le moment.</td></tr>'}</tbody></table>
+    </div>
+  `;
 }
 
 (async function () {
